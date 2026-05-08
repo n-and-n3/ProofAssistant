@@ -86,34 +86,35 @@ class Sequent:
         else:
             raise SyntaxError("???????")
 
+    def proof(self):
+        res = S.get_id_seq()
+
+        ans = True
+        for Ant, Suc in res:
+            tmp = set(y.name for y in Suc)
+            res = False
+            for x in [x.name for x in Ant]:
+                if x in tmp:
+                    res = True
+                    break
+            if not res:
+                ans = False
+
+        return ans
+
 
 A = Prop("A")
 B = Prop("B")
 C = Prop("C")
 
-print(A, B, C)
-
-X = A & (B | C)
-Y = A & B
+X = ~ ( A | B )
+Y = (~ A) & (~ B)
 
 S = Sequent((X, ),(Y, ))
+print(S.proof())
 
-print(X)
 
-res = S.get_id_seq()
 
-ans = True
-for Ant, Suc in res:
-    tmp = set(y.name for y in Suc)
-    res = False
-    for x in [x.name for x in Ant]:
-        if x in tmp:
-            res = True
-            break
-    if not res:
-        ans = False
-
-print(ans)
     
 
 
