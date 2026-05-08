@@ -1,5 +1,3 @@
-aritys = {"and" : 2, "or" : 2, "not" : 1}
-
 class Prop:
     def __init__(self,name : str):
         self.type = "prop"
@@ -49,7 +47,7 @@ class Sequent:
                 return ("suc",i)
         return ("none",-1)
 
-    def reduction(self):
+    def get_id_seq(self):
         ind = self.find_not_symbol()
 
         if ind[0] == "none":
@@ -60,14 +58,14 @@ class Sequent:
             p = self.ant[i]
             if p.type == "and":
                 S = Sequent(self.ant[:i] + (p.args[0], p.args[1]) + self.ant[i+1:], self.suc)
-                return S.reduction()
+                return S.get_id_seq()
             elif p.type == "or":
                 S1 = Sequent(self.ant[:i] + (p.args[0],) + self.ant[i+1:], self.suc)
                 S2 = Sequent(self.ant[:i] + (p.args[1],) + self.ant[i+1:], self.suc)
-                return S1.reduction() + S2.reduction()
+                return S1.get_id_seq() + S2.get_id_seq()
             elif p.type == "not":
                 S = Sequent(self.ant[:i] + self.ant[i+1:], self.suc + (p.args[0],))
-                return S.reduction()
+                return S.get_id_seq()
             else:
                 raise SyntaxError("??????")
         elif ind[0] == "suc":
@@ -76,13 +74,13 @@ class Sequent:
             if p.type == "and":
                 S1 = Sequent(self.ant, self.suc[:i] + (p.args[0],) + self.suc[i+1:])
                 S2 = Sequent(self.ant, self.suc[:i] + (p.args[1],) + self.suc[i+1:])
-                return S1.reduction() + S2.reduction()
+                return S1.get_id_seq() + S2.get_id_seq()
             elif p.type == "or":
                 S = Sequent(self.ant, self.suc[:i] + (p.args[0], p.args[1]) + self.suc[i+1:])
-                return S.reduction()
+                return S.get_id_seq()
             elif p.type == "not":
                 S = Sequent(self.ant + (p.args[0],) , self.suc[:i] + self.suc[i+1:])
-                return S.reduction()
+                return S.get_id_seq()
             else:
                 raise SyntaxError("??????")
         else:
@@ -95,14 +93,14 @@ C = Prop("C")
 
 print(A, B, C)
 
-X = A & (~A)
-Y = B & C
+X = A & (B | C)
+Y = A & B
 
 S = Sequent((X, ),(Y, ))
 
 print(X)
 
-res = S.reduction()
+res = S.get_id_seq()
 
 ans = True
 for Ant, Suc in res:
