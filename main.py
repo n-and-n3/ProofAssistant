@@ -107,7 +107,7 @@ A = Prop("A")
 B = Prop("B")
 C = Prop("C")
 
-X = ~ ( A | B )
+X = ~ A
 Y = (~ A) & (~ B)
 
 S = Sequent((X, ),(Y, ))
