@@ -151,13 +151,46 @@ struct ASTNode {
     shared_ptr<const ASTNode> left; // type == And, Or, Imp のときのみ有効
     shared_ptr<const ASTNode> right; // type == And, Or, Imp のときのみ有効
     shared_ptr<const ASTNode> operand; // type == Not のときのみ有効
+    size_t hash_value;
 
     ASTNode(LogicalType type,
             string name = "",
             shared_ptr<const ASTNode> left = nullptr,
             shared_ptr<const ASTNode> right = nullptr,
             shared_ptr<const ASTNode> operand = nullptr)
-        : type(type), name(std::move(name)), left(std::move(left)), right(std::move(right)), operand(std::move(operand)) {}
+        : type(type)
+        , name(std::move(name))
+        , left(std::move(left))
+        , right(std::move(right))
+        , operand(std::move(operand))
+        , hash_value(compute_hash()) {}
+
+    size_t hash() const noexcept {
+        return hash_value;
+    }
+
+    // NOTE: 現時点では内部実装も参照しやすいよう public のままにしている。
+    // 必要なら後で hash_combine/compute_hash を private に移す。
+    static size_t hash_combine(size_t seed, size_t value) {
+        seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+        return seed;
+    }
+
+    size_t compute_hash() const {
+        size_t seed = std::hash<int>{}(static_cast<int>(type));
+        if (type == Var) {
+            return hash_combine(seed, std::hash<string>{}(name));
+        }
+        if (type == Not) {
+            const size_t op_hash = operand ? operand->hash_value : 0;
+            return hash_combine(seed, op_hash);
+        }
+        const size_t left_hash = left ? left->hash_value : 0;
+        const size_t right_hash = right ? right->hash_value : 0;
+        seed = hash_combine(seed, left_hash);
+        seed = hash_combine(seed, right_hash);
+        return seed;
+    }
 
     string to_string() const {
         if (type == Var) {
@@ -193,9 +226,15 @@ struct ASTNode {
 // 命題そのもの（ASTNodeへの薄いラッパ）
 struct Prop {
     shared_ptr<const ASTNode> root;
+    size_t hash_value = 0;
 
     Prop() = default;
-    explicit Prop(shared_ptr<const ASTNode> root) : root(std::move(root)) {}
+
+    explicit Prop(shared_ptr<const ASTNode> root) : root(std::move(root)), hash_value(this->root ? this->root->hash() : 0) {}
+
+    size_t hash() const noexcept {
+        return hash_value;
+    }
 
     string to_string() const {
         if (!root) {
@@ -205,78 +244,74 @@ struct Prop {
     }
 
     bool operator==(const Prop& other) const {
+        if (hash_value != other.hash_value) {
+            return false;
+        }
         return ASTNode::equals(root, other.root);
     }
 };
 
+namespace std {
+template <>
+struct hash<Prop> {
+    size_t operator()(const Prop& p) const noexcept {
+        return p.hash();
+    }
+};
+} // namespace std
+
 // それぞれのノード用のコンストラクタ（ASTを隠蔽してPropを返す）
 Prop PropVar(const string& name) {
-    return Prop(make_shared<ASTNode>(Var, name));
+    const auto node = make_shared<ASTNode>(Var, name);
+    return Prop(node);
 }
 
 Prop PropAnd(const Prop& left, const Prop& right) {
-    return Prop(make_shared<ASTNode>(And, "", left.root, right.root));
+    const auto node = make_shared<ASTNode>(And, "", left.root, right.root);
+    return Prop(node);
 }
 
 Prop PropOr(const Prop& left, const Prop& right) {
-    return Prop(make_shared<ASTNode>(Or, "", left.root, right.root));
+    const auto node = make_shared<ASTNode>(Or, "", left.root, right.root);
+    return Prop(node);
 }
 
 Prop PropImp(const Prop& left, const Prop& right) {
-    return Prop(make_shared<ASTNode>(Imp, "", left.root, right.root));
+    const auto node = make_shared<ASTNode>(Imp, "", left.root, right.root);
+    return Prop(node);
 }
 
 Prop PropNot(const Prop& operand) {
-    return Prop(make_shared<ASTNode>(Not, "", nullptr, nullptr, operand.root));
+    const auto node = make_shared<ASTNode>(Not, "", nullptr, nullptr, operand.root);
+    return Prop(node);
 }
 
 struct Sequent {
-    vector<Prop> antecedent;
-    vector<Prop> succedent;
+    unordered_set<Prop> antecedent;
+    unordered_set<Prop> succedent;
 
-    Sequent(const vector<Prop>& antecedent, const vector<Prop>& succedent) : antecedent(antecedent), succedent(succedent) {}
+    Sequent(const unordered_set<Prop>& antecedent, const unordered_set<Prop>& succedent) : antecedent(antecedent), succedent(succedent) {}
 
     string to_string() const {
         string res;
-        for (size_t i = 0; i < antecedent.size(); i++) {
-            res += antecedent[i].to_string();
-            if (i != antecedent.size() - 1) {
-                res += ", ";
-            }
+        for (const auto& prop : antecedent) {
+            res += prop.to_string();
+            res += ", ";
         }
         res += " |- ";
-        for (size_t i = 0; i < succedent.size(); i++) {
-            res += succedent[i].to_string();
-            if (i != succedent.size() - 1) {
-                res += ", ";
-            }
+        for (const auto& prop : succedent) {
+            res += prop.to_string();
+            res += ", ";
         }
         return res;
     }
 
-    void normalize(){
-        // 重複を削除する、
+    bool operator==(const Sequent& other) const {
+        return antecedent == other.antecedent && succedent == other.succedent;
     }
 
-    bool operator==(const Sequent& other) const {
-        // シークエントの前件と後件は、順序を持たないものとする。
-        if (antecedent.size() != other.antecedent.size() || succedent.size() != other.succedent.size()) {
-            return false;
-        }
-        vector<string> a1, a2, s1, s2;
-        a1.reserve(antecedent.size());
-        a2.reserve(other.antecedent.size());
-        s1.reserve(succedent.size());
-        s2.reserve(other.succedent.size());
-        for (const auto& p : antecedent) a1.push_back(p.to_string());
-        for (const auto& p : other.antecedent) a2.push_back(p.to_string());
-        for (const auto& p : succedent) s1.push_back(p.to_string());
-        for (const auto& p : other.succedent) s2.push_back(p.to_string());
-        sort(a1.begin(), a1.end());
-        sort(a2.begin(), a2.end());
-        sort(s1.begin(), s1.end());
-        sort(s2.begin(), s2.end());
-        return a1 == a2 && s1 == s2;
+    bool operator!=(const Sequent& other) const {
+        return !(*this == other);
     }
 
 
@@ -406,6 +441,11 @@ Prop evaluate_Prop_expression(const vector<string>& prop_expression, const set<s
     return prop_stack.back();
 }
 
+Sequent evaluate_proof_expression(const vector<string>& proof_expression, const set<string>& env_type, const unordered_map<string, Sequent>& env_prop){
+    // NOTE: 現時点では証明の式の構文解析は未実装
+    throw runtime_error("Proof expression parsing is not implemented yet");
+}
+
 // シークエントを表すトークン列を受け取って、Sequentオブジェクトを返す関数
 Sequent parse_sequent(const vector<string>& sequent_tokens, const set<string>& env){
     // まずは |- を探す
@@ -417,14 +457,14 @@ Sequent parse_sequent(const vector<string>& sequent_tokens, const set<string>& e
     vector<string> succedent_tokens(it + 1, sequent_tokens.end());
 
     // それぞれのトークン列を Prop オブジェクトに変換する
-    vector<Prop> antecedent;
+    unordered_set<Prop> antecedent;
     for (const auto& prop : split(antecedent_tokens, ",")) {
-        antecedent.push_back(evaluate_Prop_expression(prop, env));
+        antecedent.insert(evaluate_Prop_expression(prop, env));
     }
 
-    vector<Prop> succedent;
+    unordered_set<Prop> succedent;
     for (const auto& prop : split(succedent_tokens, ",")) {
-        succedent.push_back(evaluate_Prop_expression(prop, env));
+        succedent.insert(evaluate_Prop_expression(prop, env));
     }
 
     return Sequent(antecedent, succedent);
@@ -450,8 +490,8 @@ void match_type_statement(const vector<string>& tokens, int& pos, set<string>& e
 }
 
 
-// 型付きの推論規則の返り値を処理する関数
-void match_proof_statement(const vector<string>& tokens, int& pos, set<string>& env_type, unordered_map<string, Sequent>& env_prop, string& argument_name){
+// 型付きの推論規則を処理する関数
+void match_proof_statement(const vector<string>& tokens, int& pos, set<string>& env_type, unordered_map<string, Sequent>& env_prop){
     int N = tokens.size();
     // 構文は `[シークエント] 変数名 = 証明のコード` とする
 
@@ -475,7 +515,7 @@ void match_proof_statement(const vector<string>& tokens, int& pos, set<string>& 
     if (pos >= N || !validate_var(tokens[pos])) {
         throw runtime_error("Syntax error: expected identifier after ']' in proof declaration\n");
     }
-    argument_name = tokens[pos];
+    string argument_name = tokens[pos];
 
     if (env_type.count(argument_name) != 0){
         throw runtime_error("Syntax error: variable name '" + argument_name + "' is already declared as a Type\n");
@@ -484,15 +524,98 @@ void match_proof_statement(const vector<string>& tokens, int& pos, set<string>& 
         throw runtime_error("Syntax error: duplicate declaration of argument '" + argument_name + "'\n");
     }
 
+    // = が来る
+    pos++;
+    if (pos >= N || tokens[pos] != "="){
+        throw runtime_error("Syntax error: expected '=' after argument name in proof declaration\n");
+    }
 
+    // ; までをスタックに積む
+    vector<string> proof_stack;
+    while (pos < N && tokens[pos] != ";") {
+        proof_stack.push_back(tokens[pos]);
+        pos++;
+    }
+    if (pos >= N) {
+        throw runtime_error("Syntax error: expected ';' at the end of proof declaration\n");
+    }
+    pos++; // ";" をスキップ
 
-    env_prop.emplace(argument_name, parse_sequent(sequent_tokens, env_type)); // シークエントをパースして、環境に追加する
+    Sequent result = evaluate_proof_expression(proof_stack, env_type, env_prop);
+    Sequent expected = parse_sequent(sequent_tokens, env_type);
+    if (result != expected){
+        throw runtime_error("Syntax error: proof expression does not match the expected sequent\n");
+    }
 
-
-
-    
+    env_prop.emplace(argument_name, result); // シークエントをパースして、環境に追加する
 }
 
+// autoの推論規則を処理する関数
+void match_auto_statement(const vector<string>& tokens, int& pos, set<string>& env_type, unordered_map<string, Sequent>& env_prop){
+    int N = tokens.size();
+    // 構文は `auto 変数名 = 証明のコード` とする
+    // auto から始まる
+    if (tokens[pos] != "auto") {
+        throw runtime_error("Syntax error: expected 'auto' at the beginning of auto declaration\n");
+    }
+    pos++;
+    // 変数名が来るべき
+    if (pos >= N || !validate_var(tokens[pos])) {
+        throw runtime_error("Syntax error: expected identifier after 'auto' in auto declaration\n");
+    }
+    string argument_name = tokens[pos];
+
+    if (env_type.count(argument_name) != 0){
+        throw runtime_error("Syntax error: variable name '" + argument_name + "' is already declared as a Type\n");
+    }
+    if (env_prop.count(argument_name) != 0){
+        throw runtime_error("Syntax error: duplicate declaration of argument '" + argument_name + "'\n");
+    }
+
+    // = が来る
+    pos++;
+    if (pos >= N || tokens[pos] != "="){
+        throw runtime_error("Syntax error: expected '=' after argument name in proof declaration\n");
+    }
+
+    // ; までをスタックに積む
+    vector<string> proof_stack;
+    while (pos < N && tokens[pos] != ";") {
+        proof_stack.push_back(tokens[pos]);
+        pos++;
+    }
+    if (pos >= N) {
+        throw runtime_error("Syntax error: expected ';' at the end of proof declaration\n");
+    }
+    pos++; // ";" をスキップ
+    Sequent result = evaluate_proof_expression(proof_stack, env_type, env_prop);
+
+    env_prop.emplace(argument_name, result); // シークエントをパースして、環境に追加する
+}
+
+void match_print_statement(const vector<string>& tokens, int& pos, set<string>& env_type, unordered_map<string, Sequent>& env_prop){
+    int N = tokens.size();
+    // 構文は `print 変数名;` とする
+    if (tokens[pos] != "print") {
+        throw runtime_error("Syntax error: expected 'print' at the beginning of print statement\n");
+    }
+    pos++;
+    if (pos >= N || !validate_var(tokens[pos])) {
+        throw runtime_error("Syntax error: expected identifier after 'print'\n");
+    }
+    string argument_name = tokens[pos];
+    pos++;
+    if (pos >= N || tokens[pos] != ";") {
+        throw runtime_error("Syntax error: expected ';' at the end of print statement\n");
+    }
+    pos++; // ";" をスキップ
+
+    if (env_prop.count(argument_name) == 0) {
+        throw runtime_error("Syntax error: undefined proof variable '" + argument_name + "' in print statement\n");
+    }
+
+    cout << env_prop[argument_name].to_string() << "\n";
+}
 
 int compile(const string& code){
     vector<string> tokens = tokenize(code);
@@ -508,11 +631,13 @@ int compile(const string& code){
         if (tokens[pos] == "Type"){
             match_type_statement(tokens, pos, env_type);
         } else if (tokens[pos] == "["){
-            // NOTE: 返り値型(Sequent)の構文解析は未実装
-            throw runtime_error("Return type expression parsing is not implemented yet");
+            match_proof_statement(tokens, pos, env_type, env_proof);
         } else if (tokens[pos] == "auto"){
-            
+            match_auto_statement(tokens, pos, env_type, env_proof);
         } else if (tokens[pos] == "print"){
+            match_print_statement(tokens, pos, env_type, env_proof);
+        } else if (tokens[pos] == ";"){
+            pos++; // 空の文を許容する
         } else {
             throw runtime_error("Syntax error: unexpected token '" + tokens[pos] + "'\n");
         }
