@@ -14,6 +14,9 @@
 #include <bit>
 #include <array>
 #include <random>
+#include <stack>
+#include <stdexcept>
+#include <memory>
 
 using namespace std;
 
@@ -80,27 +83,217 @@ ll powll(ll a, ll n, ll m){
 
 // ===============================================================================
 
-set<string> Inference_Rules = {
-    "Iand", "Eland", "Erand", "Ilor", "Iror", "Eor", "Iimp", "Eimp"
-};
+// 配列を特定の要素で区切る関数
+vector<vector<string>> split(const vector<string>& tokens, const string& delimiter) {
+    vector<vector<string>> result;
+    vector<string> current;
+    for (const auto& token : tokens) {
+        if (token == delimiter) {
+            if (!current.empty()) {
+                result.push_back(current);
+                current.clear();
+            }
+        } else {
+            current.push_back(token);
+        }
+    }
+    if (!current.empty()) {
+        result.push_back(current);
+    }
+    return result;
+}
 
-set<string> Curry_Rules = {
-    "Curryr", "Curryl"
-};
+
+// ===============================================================================
+
 
 set<string> Logical_Connectives = {
-    "*", "+", "->"
+    "*", "+", "->", "~"
 };
 
+auto precedence = [](const string& op) {
+    if (op == "~") return 3;
+    if (op == "*") return 2;
+    if (op == "+") return 1;
+    if (op == "->") return 0;
+    return -1;
+};
+
+auto is_right_associative = [](const string& op) {
+    return op == "->" || op == "~";
+};
+
+
 set<string> keywords = {
-    "Prop", "proof"
+    "Type", "auto", "print"
 };
 
 set<string> Syntax_Symbols = {
-    "(", ")", "{", "}", ";", ",", ":", "*", "+", "-", "<", ">", ";"
+    "(", ")", "{", "}", ";", ",", ":", "*", "+", "-", "<", ">", ";", "~"
 };
 
+enum SentenceType {
+    Initialization, // None;
+    PropDecl, // Type A;
+    ProofDecl, // (A |- A) A_id = Id<A>();
+    AutoDecl, // auto A_id = Id<A>();
+    PrintStmt, // print A_id;
+};
 
+enum LogicalType {
+    And, Or, Imp, Not, Var
+};
+
+// 命題のAST（ポインタ木部分）
+struct ASTNode {
+    LogicalType type;
+    string name; // type == Var のときのみ有効
+    shared_ptr<const ASTNode> left; // type == And, Or, Imp のときのみ有効
+    shared_ptr<const ASTNode> right; // type == And, Or, Imp のときのみ有効
+    shared_ptr<const ASTNode> operand; // type == Not のときのみ有効
+
+    ASTNode(LogicalType type,
+            string name = "",
+            shared_ptr<const ASTNode> left = nullptr,
+            shared_ptr<const ASTNode> right = nullptr,
+            shared_ptr<const ASTNode> operand = nullptr)
+        : type(type), name(std::move(name)), left(std::move(left)), right(std::move(right)), operand(std::move(operand)) {}
+
+    string to_string() const {
+        if (type == Var) {
+            return name;
+        } else if (type == Not) {
+            return "(~" + operand->to_string() + ")";
+        } else {
+            string op_str = (type == And) ? "*" : (type == Or) ? "+" : "->";
+            return "(" + left->to_string() + " " + op_str + " " + right->to_string() + ")";
+        }
+    }
+
+    static bool equals(const shared_ptr<const ASTNode>& a, const shared_ptr<const ASTNode>& b) {
+        if (a == b) {
+            return true;
+        }
+        if (!a || !b) {
+            return false;
+        }
+        if (a->type != b->type) {
+            return false;
+        }
+        if (a->type == Var) {
+            return a->name == b->name;
+        }
+        if (a->type == Not) {
+            return equals(a->operand, b->operand);
+        }
+        return equals(a->left, b->left) && equals(a->right, b->right);
+    }
+};
+
+// 命題そのもの（ASTNodeへの薄いラッパ）
+struct Prop {
+    shared_ptr<const ASTNode> root;
+
+    Prop() = default;
+    explicit Prop(shared_ptr<const ASTNode> root) : root(std::move(root)) {}
+
+    string to_string() const {
+        if (!root) {
+            throw runtime_error("Internal error: empty Prop");
+        }
+        return root->to_string();
+    }
+
+    bool operator==(const Prop& other) const {
+        return ASTNode::equals(root, other.root);
+    }
+};
+
+// それぞれのノード用のコンストラクタ（ASTを隠蔽してPropを返す）
+Prop PropVar(const string& name) {
+    return Prop(make_shared<ASTNode>(Var, name));
+}
+
+Prop PropAnd(const Prop& left, const Prop& right) {
+    return Prop(make_shared<ASTNode>(And, "", left.root, right.root));
+}
+
+Prop PropOr(const Prop& left, const Prop& right) {
+    return Prop(make_shared<ASTNode>(Or, "", left.root, right.root));
+}
+
+Prop PropImp(const Prop& left, const Prop& right) {
+    return Prop(make_shared<ASTNode>(Imp, "", left.root, right.root));
+}
+
+Prop PropNot(const Prop& operand) {
+    return Prop(make_shared<ASTNode>(Not, "", nullptr, nullptr, operand.root));
+}
+
+struct Sequent {
+    vector<Prop> antecedent;
+    vector<Prop> succedent;
+
+    Sequent(const vector<Prop>& antecedent, const vector<Prop>& succedent) : antecedent(antecedent), succedent(succedent) {}
+
+    string to_string() const {
+        string res;
+        for (size_t i = 0; i < antecedent.size(); i++) {
+            res += antecedent[i].to_string();
+            if (i != antecedent.size() - 1) {
+                res += ", ";
+            }
+        }
+        res += " |- ";
+        for (size_t i = 0; i < succedent.size(); i++) {
+            res += succedent[i].to_string();
+            if (i != succedent.size() - 1) {
+                res += ", ";
+            }
+        }
+        return res;
+    }
+
+    void normalize(){
+        // 重複を削除する、
+    }
+
+    bool operator==(const Sequent& other) const {
+        // シークエントの前件と後件は、順序を持たないものとする。
+        if (antecedent.size() != other.antecedent.size() || succedent.size() != other.succedent.size()) {
+            return false;
+        }
+        vector<string> a1, a2, s1, s2;
+        a1.reserve(antecedent.size());
+        a2.reserve(other.antecedent.size());
+        s1.reserve(succedent.size());
+        s2.reserve(other.succedent.size());
+        for (const auto& p : antecedent) a1.push_back(p.to_string());
+        for (const auto& p : other.antecedent) a2.push_back(p.to_string());
+        for (const auto& p : succedent) s1.push_back(p.to_string());
+        for (const auto& p : other.succedent) s2.push_back(p.to_string());
+        sort(a1.begin(), a1.end());
+        sort(a2.begin(), a2.end());
+        sort(s1.begin(), s1.end());
+        sort(s2.begin(), s2.end());
+        return a1 == a2 && s1 == s2;
+    }
+
+
+};
+
+// =================================================================================================================
+// 変数名の妥当性検査
+auto validate_var(string name){
+    if (name.empty() || !isalpha(name[0]) || keywords.count(name) != 0 || Logical_Connectives.count(name) != 0) {
+        return false;
+    } else {
+        return true;
+    }
+}
+// =================================================================================================================
+
+// プログラム全体をトークナイズする
 vector<string> tokenize(string code){
     vector<string> tokens;
     size_t pos = 0;
@@ -118,120 +311,214 @@ vector<string> tokenize(string code){
     return tokens;
 }
 
-bool check_type(vector<string>& expression_arg_stack, vector<string>& expression_ret_stack, vector<string>& proof_tokens, set<string>& env, string& argument_name){
-    // ここで proof_tokens を解析して、型チェックを行う
-    // expression_arg_stack は proof の引数のスタック、expression_ret_stack は式のスタック、env は型環境
-    // argument_name は proof の引数の名前
+// Propのtoken列を受け取り、RPNに変換する
+vector<string> transform_to_RPN(const vector<string>& prop_expression, const set<string>& env){
+    // Shunting yard algorithm
+    stack<string> op_stack;
+    vector<string> output_stack;
 
-    // 例えば、proof_tokens を左から順に見ていって、Inference_Rules や Curry_Rules が出てきたらスタックから必要な数だけ取り出して型をチェックする、など
-    // 成功したら true を返す, 失敗したら false を返す
-
-    // 解析結果のprint
-    for (const auto& token : expression_arg_stack) {
-        cout << "Expression Arg Stack: " << token << "\n";
-    }
-    for (const auto& token : expression_ret_stack) {
-        cout << "Expression Ret Stack: " << token << "\n";
-    }
-    for (const auto& token : proof_tokens) {
-        cout << "Proof Token: " << token << "\n";
-    }
-    for (const auto& token : env) {
-        cout << "Environment Token: " << token << "\n";
-    }
-    cout << "Argument Name: " << argument_name << "\n";
-
-    return true; // 仮に常に成功するようにしておく
-}
-
-int compile(string code){
-    vector<string> tokens = tokenize(code);
-    // ここでトークンを解析して、型チェックや証明の検証を行う
-    // 例えば、トークンをスタックに積んでいって、演算子が出てきたらスタックから必要な数だけ取り出して型をチェックする、など
-    // 成功したら0を返す, 失敗したらエラーコードを返す
-
-    set<string> env; // 型環境
-    vector<string> expression_ret_stack; // 式のスタック、型を表す文字列を積む
-
-    for (int i = 0; i < tokens.size(); i++) {
-        string token = tokens[i];
-        if (keywords.count(token)) {
-            if (token == "Prop") {
-                env.insert(tokens[i + 1]); // 次のトークンは型の名前
-                i++; // 次のトークンはスキップ
-            } else if (token == "proof") {
-                // 波括弧の中のコードを取得して check_type 関数に渡す
-                // 型 proof(変数名:型){証明} の形式で書かれている
-                vector<string> expression_arg_stack;
-                vector<string> proof_tokens;
-                string argument_name;
-                // ここで proof の引数と証明のコードを解析して、expression_arg_stack と proof_tokens に格納する
-                // まずは　proof の引数を解析する
-                if (tokens[i + 1] != "(") {
-                    cout << "Syntax error: expected '(' after 'proof'\n";
-                    return -1; // syntax error
-                }
-                i += 2; // "proof" と "(" をスキップ
-
-                argument_name = tokens[i]; // 変数名
-                i++; // 変数名をスキップ
-                if (tokens[i] != ":") {
-                    cout << "Syntax error: expected ':' after proof argument name\n";
-                    return -1; // syntax error
-                }
-                i++; // ":" をスキップ
-
-                // ここは、()の対応を取る必要がある
-                int paren_count = 1; // "(" はすでに1つ見ている
-                while (i < tokens.size() && paren_count > 0) {
-                    if (tokens[i] == "(") {
-                        paren_count++;
-                    } else if (tokens[i] == ")") {
-                        paren_count--;
-                    }
-                    if (paren_count > 0) { // 対応する ")" を見つけるまでは引数スタックに入れる
-                        expression_arg_stack.push_back(tokens[i]);
-                    }
-                    i++;
-                }
-
-                // proof の本体を解析する
-                if (i >= tokens.size() || tokens[i] != "{") {
-                    cout << "Syntax error: expected '{' after proof arguments\n";
-                    return -1; // syntax error
-                }
-                i++; // "{" をスキップ
-                // while で次の "}"が出てくるまで右に行く
-                while (i < tokens.size() && tokens[i] != "}") {
-                    proof_tokens.push_back(tokens[i]);
-                    i++;
-                }
-                if (i >= tokens.size() || tokens[i] != "}") {
-                    cout << "Syntax error: expected '}' at the end of proof\n";
-                    return -1; // syntax error
-                }
-
-                bool result = check_type(expression_arg_stack, expression_ret_stack, proof_tokens, env, argument_name);
-
-                if (!result) {
-                    cout << "Type check failed for proof: " << argument_name << "\n";
-                    return -1; // type check failed
+    for(auto token : prop_expression){
+        if (env.count(token) != 0) {
+            output_stack.push_back(token);
+        } else if (Logical_Connectives.count(token) != 0) {
+            while (!op_stack.empty() && Logical_Connectives.count(op_stack.top()) != 0) {
+                const string& top = op_stack.top();
+                if (precedence(top) > precedence(token) ||
+                    (precedence(top) == precedence(token) && !is_right_associative(token))) {
+                    output_stack.push_back(top);
+                    op_stack.pop();
                 } else {
-                    // type check succeeded, continue parsing the rest of the code
-                    return 0;
+                    break;
                 }
-
             }
-        } else if (Inference_Rules.count(token) || Curry_Rules.count(token) || Logical_Connectives.count(token) || env.count(token)) {
-            expression_ret_stack.push_back(token);
-        } else if (token == ";") {
-            expression_ret_stack.clear(); // セミコロンで式のスタックをクリアする
+            op_stack.push(token);
+        } else if (token == "(") {
+            op_stack.push(token);
+        } else if (token == ")") {
+            while (!op_stack.empty() && op_stack.top() != "(") {
+                output_stack.push_back(op_stack.top());
+                op_stack.pop();
+            }
+            if (op_stack.empty() || op_stack.top() != "(") {
+                throw runtime_error("Syntax error: mismatched parentheses");
+            }
+            op_stack.pop(); // "(" をポップ
         } else {
-            cout << "Unknown token: " << token << "\n";
-            return -1; // 不明なトークン
+            throw runtime_error("Syntax error: unknown token '" + token + "'");
         }
     }
-    return 0; // ここを通るということは、証明を検証するコードがなかったということなので、まあ成功とみなす
+
+    while (!op_stack.empty()) {
+        if (op_stack.top() == "(") {
+            throw runtime_error("Syntax error: mismatched parentheses");
+        }
+        output_stack.push_back(op_stack.top());
+        op_stack.pop();
+    }
+
+    return output_stack;
+
+}
+
+// RPNに変換された token列の Prop を計算する
+Prop evaluate_Prop_expression(const vector<string>& prop_expression, const set<string>& env){
+    vector<string> rpn = transform_to_RPN(prop_expression, env);
+    if (rpn.empty()) {
+        throw runtime_error("Syntax error: invalid expression");
+    }
+    vector<Prop> prop_stack;
+    for (const auto& token : rpn) {
+        cout << "RPN Token: " << token << "\n";
+        if (env.count(token) != 0) {
+            prop_stack.push_back(PropVar(token));
+        } else if (token == "~") {
+            if (prop_stack.empty()) {
+                throw runtime_error("Syntax error: invalid expression");
+            }
+            Prop operand = prop_stack.back();
+            prop_stack.pop_back();
+            prop_stack.push_back(PropNot(operand));
+        } else if (Logical_Connectives.count(token) != 0) {
+            if (prop_stack.size() < 2) {
+                throw runtime_error("Syntax error: invalid expression");
+            }
+            Prop right = prop_stack.back();
+            prop_stack.pop_back();
+            Prop left = prop_stack.back();
+            prop_stack.pop_back();
+            if (token == "*") {
+                prop_stack.push_back(PropAnd(left, right));
+            } else if (token == "+") {
+                prop_stack.push_back(PropOr(left, right));
+            } else if (token == "->") {
+                prop_stack.push_back(PropImp(left, right));
+            } else {
+                throw runtime_error("Syntax error: unknown operator '" + token + "'");
+            }
+        } else {
+            throw runtime_error("Syntax error: unknown token '" + token + "'");
+        }
+    }
+    if (prop_stack.size() != 1) {
+        throw runtime_error("Syntax error: invalid expression");
+
+    }
+    return prop_stack.back();
+}
+
+// シークエントを表すトークン列を受け取って、Sequentオブジェクトを返す関数
+Sequent parse_sequent(const vector<string>& sequent_tokens, const set<string>& env){
+    // まずは |- を探す
+    auto it = find(sequent_tokens.begin(), sequent_tokens.end(), "|-");
+    if (it == sequent_tokens.end()) {
+        throw runtime_error("Syntax error: expected '|-' in sequent\n");
+    }
+    vector<string> antecedent_tokens(sequent_tokens.begin(), it);
+    vector<string> succedent_tokens(it + 1, sequent_tokens.end());
+
+    // それぞれのトークン列を Prop オブジェクトに変換する
+    vector<Prop> antecedent;
+    for (const auto& prop : split(antecedent_tokens, ",")) {
+        antecedent.push_back(evaluate_Prop_expression(prop, env));
+    }
+
+    vector<Prop> succedent;
+    for (const auto& prop : split(succedent_tokens, ",")) {
+        succedent.push_back(evaluate_Prop_expression(prop, env));
+    }
+
+    return Sequent(antecedent, succedent);
+}
+
+// 型宣言文を処理する関数
+void match_type_statement(const vector<string>& tokens, int& pos, set<string>& env_type){
+    int N = tokens.size();
+    if (tokens[pos] != "Type") {
+        throw runtime_error("Syntax error: expected 'Type' at the beginning of Type declaration\n");
+    } else if (pos+1 >= N || !validate_var(tokens[pos+1])) {
+        throw runtime_error("Syntax error: expected identifier after 'Type'\n");
+    } else if (keywords.count(tokens[pos+1]) != 0) {
+        throw runtime_error("Syntax error: '" + tokens[pos+1] + "' is a keyword\n");
+    } else if (env_type.count(tokens[pos+1]) != 0) {
+        throw runtime_error("Syntax error: duplicate Type declaration for '" + tokens[pos+1] + "'\n");
+    } else if (pos + 2 >= N || tokens[pos + 2] != ";") { // 変数の後は ; である。
+        throw runtime_error("Syntax error: expected ';' after Type declaration\n");
+    } else {
+        env_type.insert(tokens[pos+1]);
+        pos += 3; // Typeと変数と ";" をスキップ
+    }
+}
+
+
+// 型付きの推論規則の返り値を処理する関数
+void match_proof_statement(const vector<string>& tokens, int& pos, set<string>& env_type, unordered_map<string, Sequent>& env_prop, string& argument_name){
+    int N = tokens.size();
+    // 構文は `[シークエント] 変数名 = 証明のコード` とする
+
+    // [ から始まる
+    if (tokens[pos] != "[") {
+        throw runtime_error("Syntax error: expected '[' at the beginning of proof declaration\n");
+    }
+
+    // ] を探す
+    vector<string> sequent_tokens;
+    while (pos < N && tokens[pos] != "]") {
+        sequent_tokens.push_back(tokens[pos]);
+        pos++;
+    }
+    if (pos >= N) {
+        throw runtime_error("Syntax error: expected ']' at the end of sequent in proof declaration\n");
+    }
+
+    // ] の次は変数名であるべき
+    pos++; // "]" をスキップ
+    if (pos >= N || !validate_var(tokens[pos])) {
+        throw runtime_error("Syntax error: expected identifier after ']' in proof declaration\n");
+    }
+    argument_name = tokens[pos];
+
+    if (env_type.count(argument_name) != 0){
+        throw runtime_error("Syntax error: variable name '" + argument_name + "' is already declared as a Type\n");
+    }
+    if (env_prop.count(argument_name) != 0){
+        throw runtime_error("Syntax error: duplicate declaration of argument '" + argument_name + "'\n");
+    }
+
+
+
+    env_prop.emplace(argument_name, parse_sequent(sequent_tokens, env_type)); // シークエントをパースして、環境に追加する
+
+
+
+    
+}
+
+
+int compile(const string& code){
+    vector<string> tokens = tokenize(code);
+
+    set<string> env_type; // Typeで宣言された識別子（命題変数）の列挙
+    unordered_map<string, Sequent> env_proof; // 証明(Sequent)の列挙（未使用/拡張予定）
+    int N = tokens.size();
+
+
+    int pos = 0;
+
+    while (pos < N){
+        if (tokens[pos] == "Type"){
+            match_type_statement(tokens, pos, env_type);
+        } else if (tokens[pos] == "["){
+            // NOTE: 返り値型(Sequent)の構文解析は未実装
+            throw runtime_error("Return type expression parsing is not implemented yet");
+        } else if (tokens[pos] == "auto"){
+            
+        } else if (tokens[pos] == "print"){
+        } else {
+            throw runtime_error("Syntax error: unexpected token '" + tokens[pos] + "'\n");
+        }
+    }
+
+    return 0; // とりあえず成功とする
 }
 
 
@@ -240,21 +527,16 @@ int main(){
     std::cin.tie(nullptr);
 
     // ========= Write your code here! ============================================================================
-    //                                       
-    string code = "Prop P;\nProp Q;\nProp R;\n\nP*Q + P*R proof(h : P * (Q + R)){\nEor(Erand(h), Curryr<Q>(Ilor<P*R>(Iand), Eland(h)), Curryr<R>(Iror<P*Q>(Iand), Eland(h)))\n}";
-    //                                    
+                                    
+    string code = "Type A;\n"
+                  "Type B;\n";
+                                  
     // ============================================================================================================
 
-
     vector<string> tokens = tokenize(code);
-
     for (const auto& token : tokens) {
         if (keywords.count(token)) {
             cout << "Keyword: " << token << "\n";
-        } else if (Inference_Rules.count(token)) {
-            cout << "Inference Rule: " << token << "\n";
-        } else if (Curry_Rules.count(token)) {
-            cout << "Curry Rule: " << token << "\n";
         } else if (Logical_Connectives.count(token)) {
             cout << "Logical Connective: " << token << "\n";
         } else {
@@ -262,74 +544,194 @@ int main(){
         }
     }
 
-    int result = compile(code);
-    if (result == 0) {
-        cout << "Compilation succeeded!\n";
-    } else {
-        cout << "Compilation failed with error code: " << result << "\n";
+    Prop res = evaluate_Prop_expression({"A", "*","~" ,"B", "+","~", "C"}, {"A", "B", "C"});
+    cout << "Evaluated Prop expression: " << res.to_string() << "\n";
+
+    try {
+        compile(code);
+    } catch (const runtime_error& e) {
+        cout << e.what() << "\n";
+        return 1;
     }
 
 }
 
 /*
 メタコード
-Prop Iand(A : Prop, B : Prop){
-  return A * B;
+struct Prop{
+  // hoge
 }
 
-Prop Eland(X : Prop * Prop){
-  return X.left;
+struct Sequent{
+  vector<Prop> antecedent;
+  vector<Prop> succedent;
+
+  Sequent(Prop X, Prop Y){
+    return Sequent({X}, {Y});
+  }
 }
 
-Prop Erand(X : Prop * Prop){
-  return X.right;
+Sequent Id<P : Prop>(){
+  return Sequent(P, P);
 }
 
-Prop Iror<Q : Prop>(P : Prop){
-  return P + Q;
+Sequent KL<A : Prop>(S : Sequent){
+    vector<Prop> new_antecedent = S.antecedent;
+    vector<Prop> new_succedent = S.succedent;
+    new_antecedent.push_back(A);
+
+    return Sequent(new_antecedent, new_succedent);
 }
 
+Sequent KR<A : Prop>(S : Sequent){
+    vector<Prop> new_antecedent = S.antecedent;
+    vector<Prop> new_succedent = S.succedent;
+    new_succedent.push_back(A);
 
-Prop Iror<Q : Prop>(P : Prop){
-  return P + Q;
+    return Sequent(new_antecedent, new_succedent);
 }
 
-Prop Eor(P : Prop + Prop, f : Prop(Prop), g : Prop(Prop)){
-  return f(P.right);
+Sequent andL<A : Prop, B : Prop>(S : Sequent){
+    assert(A in S.antecedent);
+    assert(B in S.antecedent);
+
+    vector<Prop> new_antecedent = S.antecedent;
+    vector<Prop> new_succedent = S.succedent;
+    new_succedent.push_back(A*B);
+
+    return Sequent(new_antecedent, new_succedent);
 }
 
-Prop Iimp(X : Prop(Prop)){
-  return X.domain -> Y.codomain;
-}
-  
-Prop Iimp(X : Prop(Prop)){
-  return X.domain -> Y.codomain;
+Sequent andR<A : Prop, B : Prop>(S1 : Sequent, S2 : Sequent){
+    assert(A in S1.succedent);
+    assert(B in S2.succedent);
+    assert(S1.antecedent == S2.antecedent);
+    assert(S1.succedent - {A} == S2.succedent - {B});
+
+    vector<Prop> new_antecedent = S1.antecedent;
+    new_antecedent.insert(new_antecedent.end(), S2.antecedent.begin(), S2.antecedent.end());
+    vector<Prop> new_succedent = S1.succedent;
+    new_succedent.insert(new_succedent.end(), S2.succedent.begin(), S2.succedent.end());
+    new_succedent.push_back(A*B);
+
+    return Sequent(new_antecedent, new_succedent);
 }
 
-Prop Eimp(X : Prop -> Prop, Y : Prop){
-  return X(Y);
+Sequent orL<A : Prop, B : Prop>(S1 : Sequent, S2 : Sequent){
+    assert(A in S1.antecedent);
+    assert(B in S2.antecedent);
+    assert(S1.succedent == S2.succedent);
+    assert(S1.antecedent - {A} == S2.antecedent - {B});
+
+    vector<Prop> new_antecedent = S1.antecedent;
+    new_antecedent.insert(new_antecedent.end(), S2.antecedent.begin(), S2.antecedent.end());
+    vector<Prop> new_succedent = S1.succedent;
+    new_succedent.insert(new_succedent.end(), S2.succedent.begin(), S2.succedent.end());
+    new_antecedent.push_back(A+B);
+
+    return Sequent(new_antecedent, new_succedent);
 }
 
-Prop(Prop) Curryr< : Prop>(f : Prop(Prop, Prop),Y : Prop){
-  return lambda x: Curryl(x, Y)
+Sequent orR<A : Prop, B : Prop>(S : Sequent){
+    assert(A in S.succedent)
+    assert(B in S.succedent);
+
+    vector<Prop> new_antecedent = S.antecedent;
+    vector<Prop> new_succedent = S.succedent;
+    new_succedent.push_back(A+B);
+
+    return Sequent(new_antecedent, new_succedent);
 }
 
-Prop(Prop) Curryl< : Prop>(f : Prop(Prop, Prop),X : Prop){
-  return lambda y: Curryl(X, y)
+Sequent impL<A : Prop, B : Prop>(S1 : Sequent, S2 : Sequent){
+    assert(A in S1.succedent);
+    assert(B in S2.antecedent);
+    assert(S1.antecedent == S2.antecedent);
+    assert(S1.succedent - {A} == S2.succedent - {B});
+
+    vector<Prop> new_antecedent = S1.antecedent;
+    new_antecedent.insert(new_antecedent.end(), S2.antecedent.begin(), S2.antecedent.end());
+    vector<Prop> new_succedent = S1.succedent;
+    new_succedent.insert(new_succedent.end(), S2.succedent.begin(), S2.succedent.end());
+    new_antecedent.push_back(A->B);
+
+    return Sequent(new_antecedent, new_succedent);
 }
 
-// 否定の導入、除去、背理法は後でやる
+Sequent impR<A : Prop, B : Prop>(S : Sequent){
+    assert(A in S.antecedent);
+    assert(B in S.succedent);
+
+    vector<Prop> new_antecedent = S.antecedent;
+    vector<Prop> new_succedent = S.succedent;
+    new_succedent.push_back(A->B);
+
+    return Sequent(new_antecedent, new_succedent);
+}
+
+Sequent notR<A : Prop>(S : Sequent){
+    assert(A in S.antecedent);
+
+    vector<Prop> new_antecedent = S.antecedent;
+    vector<Prop> new_succedent = S.succedent;
+    new_antecedent.erase(remove(new_antecedent.begin(), new_antecedent.end(), A), new_antecedent.end());
+    new_succedent.push_back(not A);
+
+    return Sequent(new_antecedent, new_succedent);
+}
+
+Sequent notL<A : Prop>(S : Sequent){
+    assert(A in S.succedent);
+
+    vector<Prop> new_antecedent = S.antecedent;
+    vector<Prop> new_succedent = S.succedent;
+    new_succedent.erase(remove(new_succedent.begin(), new_succedent.end(), A), new_succedent.end());
+    new_antecedent.push_back(not A);
+
+    return Sequent(new_antecedent, new_succedent);
 
 */
 
 // $$ P \land (Q \lor R) \implies (P \land Q) \lor (P \land R) $$
+// not (A * B) -> not A + not B
+
 
 /*
-Prop P;
-Prop Q;
-Prop R;
+Prop A;
+Prop B;
 
-P*Q + P*R proof(h : P * (Q + R)){
-  Eor(Erand(h), Curryr<Q>(Ilor<P*R>(Iand), Eland(h)), Curryr<R>(Iror<P*Q>(Iand), Eland(h)));
-}
+auto A_id = Id<A>();
+auto B_id = Id<B>();
+
+auto AB_A = KL<B>(A_id);
+auto AB_B = KL<A>(B_id);
+
+auto AB_AB = andR<A, B>(AB_A, AB_B);
+auto nAB_AB = notL<A*B>(AB_AB);
+auto nAB_nA_nB = notR<A>(notR<B>(nAB_AB));
+
+auto nAB_nAnB = orR<A, B>(nAB_nA_nB);
+
+print nAB_nAnB;
+
+*/
+
+/*
+           
+    string code = "Prop A;\n"
+                  "Prop B;\n"
+
+                  "[A |- A] A_id = Id<A>();\n"
+                  "auto B_id = Id<B>();\n"
+
+                  "auto AB_A = KL<B>(A_id);\n"
+                  "[B,A |- B] AB_B = KL<A>(B_id);\n"
+
+                  "auto AB_AB = andR<A, B>(AB_A, AB_B);\""
+                  "auto nAB_AB = notL<A*B>(AB_AB);\n"
+                  "auto nAB_nA_nB = notR<A>(notR<B>(nAB_AB));\n"
+                  "auto nAB_nAnB = orR<A, B>(nAB_nA_nB);\n"
+
+                  "print nAB_nAnB;";
+
 */
