@@ -129,7 +129,39 @@ set<string> keywords = {
 };
 
 set<string> Syntax_Symbols = {
-    "(", ")", "{", "}", ";", ",", ":", "*", "+", "-", "<", ">", ";", "~"
+    "(", ")", "{", "}", ";", ",", ":", "*", "+", "-", "<", ">", ";", "~", "[", "]", "|-"
+};
+
+set<string> inference_rules = {
+    "andL", "andR", "orL", "orR", "impL", "impR", "notL", "notR", "Id", "KL", "KR"
+};
+
+unordered_map<string, int> inference_rule_arity = {
+    {"andL", 1},
+    {"andR", 2},
+    {"orL", 2},
+    {"orR", 1},
+    {"impL", 2},
+    {"impR", 1},
+    {"notL", 1},
+    {"notR", 1},
+    {"Id", 0},
+    {"KL", 1},
+    {"KR", 1}
+};
+
+unordered_map<string, int> inference_rule_template_arity = {
+    {"andL", 2},
+    {"andR", 2},
+    {"orL", 2},
+    {"orR", 2},
+    {"impL", 2},
+    {"impR", 2},
+    {"notL", 1},
+    {"notR", 1},
+    {"Id", 1},
+    {"KL", 1},
+    {"KR", 1}
 };
 
 enum SentenceType {
@@ -286,10 +318,12 @@ Prop PropNot(const Prop& operand) {
     return Prop(node);
 }
 
+
 struct Sequent {
     unordered_set<Prop> antecedent;
     unordered_set<Prop> succedent;
 
+    Sequent() = default;
     Sequent(const unordered_set<Prop>& antecedent, const unordered_set<Prop>& succedent) : antecedent(antecedent), succedent(succedent) {}
 
     string to_string() const {
@@ -326,13 +360,197 @@ auto validate_var(string name){
         return true;
     }
 }
+
+int uuid = 0; // 内部的に使用する変数名を生成するためのカウンタ
+
+string get_unique_var_name(){
+    return "_" + to_string(uuid++);
+}
 // =================================================================================================================
+
+Sequent apply_andL(Prop A, Prop B, Sequent sequent){
+    // A, B, Γ |- Δ から A * B, Γ |- Δ を導出する
+    unordered_set<Prop> new_antecedent = sequent.antecedent;
+    if (new_antecedent.find(A) == new_antecedent.end()){
+        throw runtime_error("Inference error: antecedent does not contain " + A.to_string() + " in apply_andL");
+    }
+    if (new_antecedent.find(B) == new_antecedent.end()){
+        throw runtime_error("Inference error: antecedent does not contain " + B.to_string() + " in apply_andL");
+    }
+    new_antecedent.erase(A);
+    new_antecedent.erase(B);
+    new_antecedent.insert(PropAnd(A, B));
+    return Sequent(new_antecedent, sequent.succedent);
+}
+
+Sequent apply_andR(Prop A, Prop B, Sequent sequent1, Sequent sequent2){
+    // Γ |- Δ, A と Γ |- Δ, B から Γ |- Δ, A * B を導出する
+    if (sequent1.antecedent != sequent2.antecedent) {
+        throw runtime_error("Inference error: antecedents do not match in apply_andR");
+    }
+    if (sequent1.succedent.find(A) == sequent1.succedent.end()) {
+        throw runtime_error("Inference error: succedent of first sequent does not contain " + A.to_string() + " in apply_andR");
+    }
+    if (sequent2.succedent.find(B) == sequent2.succedent.end()) {
+        throw runtime_error("Inference error: succedent of second sequent does not contain " + B.to_string() + " in apply_andR");
+    }
+    unordered_set<Prop> new_succedent1 = sequent1.succedent;
+    unordered_set<Prop> new_succedent2 = sequent2.succedent;
+    new_succedent1.erase(A);
+    new_succedent2.erase(B);
+    if (new_succedent1 != new_succedent2) {
+        throw runtime_error("Inference error: succedents do not match after erasing A and B in apply_andR");
+    }
+    new_succedent1.insert(PropAnd(A, B));
+    return Sequent(sequent1.antecedent, new_succedent1);
+}
+
+Sequent apply_orL(Prop A, Prop B, Sequent sequent1, Sequent sequent2){
+    // A, Γ |- Δ と B, Γ |- Δ から A + B, Γ |- Δ を導出する
+    if (sequent1.succedent != sequent2.succedent) {
+        throw runtime_error("Inference error: succedents do not match in apply_orL");
+    }
+    if (sequent1.antecedent.find(A) == sequent1.antecedent.end()) {
+        throw runtime_error("Inference error: antecedent of first sequent does not contain " + A.to_string() + " in apply_orL");
+    }
+    if (sequent2.antecedent.find(B) == sequent2.antecedent.end()) {
+        throw runtime_error("Inference error: antecedent of second sequent does not contain " + B.to_string() + " in apply_orL");
+    }
+    unordered_set<Prop> new_antecedent1 = sequent1.antecedent;
+    unordered_set<Prop> new_antecedent2 = sequent2.antecedent;
+    new_antecedent1.erase(A);
+    new_antecedent2.erase(B);
+    if (new_antecedent1 != new_antecedent2) {
+        throw runtime_error("Inference error: antecedents do not match after erasing A and B in apply_orL");
+    }
+    new_antecedent1.insert(PropOr(A, B));
+    return Sequent(new_antecedent1, sequent1.succedent);
+}
+
+Sequent apply_orR(Prop A, Prop B, Sequent sequent){
+    // Γ |- Δ, A, B から Γ |- Δ, A + B を導出する
+    unordered_set<Prop> new_succedent = sequent.succedent;
+    if (new_succedent.find(A) == new_succedent.end()){
+        throw runtime_error("Inference error: succedent does not contain " + A.to_string() + " in apply_orR");
+    }
+    if (new_succedent.find(B) == new_succedent.end()){
+        throw runtime_error("Inference error: succedent does not contain " + B.to_string() + " in apply_orR");
+    }
+    new_succedent.erase(A);
+    new_succedent.erase(B);
+    new_succedent.insert(PropOr(A, B));
+    return Sequent(sequent.antecedent, new_succedent);
+}
+
+Sequent apply_implL(Prop A, Prop B, Sequent sequent1, Sequent sequent2){
+    // Γ |- Δ, A と B, Γ |- Δ から A -> B, Γ |- Δ を導出する
+    if (sequent1.succedent.find(A) == sequent1.succedent.end()) {
+        throw runtime_error("Inference error: succedent of first sequent does not contain " + A.to_string() + " in apply_implL");
+    }
+    if (sequent2.antecedent.find(B) == sequent2.antecedent.end()) {
+        throw runtime_error("Inference error: antecedent of second sequent does not contain " + B.to_string() + " in apply_implL");
+    }
+    unordered_set<Prop> new_succedent1 = sequent1.succedent;
+    unordered_set<Prop> new_antecedent2 = sequent2.antecedent;
+    new_succedent1.erase(A);
+    new_antecedent2.erase(B);
+    if (sequent1.antecedent != new_antecedent2 || new_succedent1 != sequent2.succedent) {
+        throw runtime_error("Inference error: antecedents or succedents do not match after erasing A and B in apply_implL");
+    }
+    new_antecedent2.insert(PropImp(A, B));
+    return Sequent(new_antecedent2, sequent2.succedent);
+}
+
+Sequent apply_implR(Prop A, Prop B, Sequent sequent){
+    // A, Γ |- Δ, B から Γ |- Δ, A -> B を導出する
+    unordered_set<Prop> new_antecedent = sequent.antecedent;
+    unordered_set<Prop> new_succedent = sequent.succedent;
+    if (new_antecedent.find(A) == new_antecedent.end()){
+        throw runtime_error("Inference error: antecedent does not contain " + A.to_string() + " in apply_implR");
+    }
+    if (new_succedent.find(B) == new_succedent.end()){
+        throw runtime_error("Inference error: succedent does not contain " + B.to_string() + " in apply_implR");
+    }
+    new_antecedent.erase(A);
+    new_succedent.erase(B);
+    new_succedent.insert(PropImp(A, B));
+    return Sequent(new_antecedent, new_succedent);
+}
+
+Sequent apply_notL(Prop A, Sequent sequent){
+    // Γ |- Δ, A から ~A, Γ |- Δ を導出する
+    unordered_set<Prop> new_antecedent = sequent.antecedent;
+    unordered_set<Prop> new_succedent = sequent.succedent;
+    if (new_succedent.find(A) == new_succedent.end()){
+        throw runtime_error("Inference error: succedent does not contain " + A.to_string() + " in apply_notL");
+    }
+    new_succedent.erase(A);
+    new_antecedent.insert(PropNot(A));
+    return Sequent(new_antecedent, new_succedent);
+
+}
+
+Sequent apply_notR(Prop A, Sequent sequent){
+    // Γ,A |- Δ から Γ |- Δ, ~A を導出する
+    unordered_set<Prop> new_antecedent = sequent.antecedent;
+    unordered_set<Prop> new_succedent = sequent.succedent;
+    if (new_antecedent.find(A) == new_antecedent.end()){
+        throw runtime_error("Inference error: antecedent does not contain " + A.to_string() + " in apply_notR");
+    }
+    new_antecedent.erase(A);
+    new_succedent.insert(PropNot(A));
+    return Sequent(new_antecedent, new_succedent);
+}
+
+Sequent apply_Id(Prop A){
+    // A |- A を導出する
+    return Sequent({A}, {A});
+}
+
+Sequent apply_KL(Prop A, Sequent sequent){
+    // Γ |- Δ から Γ, A |- Δ を導出する
+    unordered_set<Prop> new_antecedent = sequent.antecedent;
+    new_antecedent.insert(A);
+    return Sequent(new_antecedent, sequent.succedent);
+}
+
+Sequent apply_KR(Prop A, Sequent sequent){
+    // Γ |- Δ から Γ |- Δ, A を導出する
+    unordered_set<Prop> new_succedent = sequent.succedent;
+    new_succedent.insert(A);
+    return Sequent(sequent.antecedent, new_succedent);
+}
+
+
+
+// ================================================================================================
 
 // プログラム全体をトークナイズする
 vector<string> tokenize(string code){
     vector<string> tokens;
     size_t pos = 0;
     for (size_t i = 0; i <= code.size(); i++) {
+        // 2文字トークンを優先して切り出す
+        if (i + 1 < code.size()) {
+            if (code[i] == '|' && code[i + 1] == '-') {
+                if (pos < i) {
+                    tokens.push_back(code.substr(pos, i - pos));
+                }
+                tokens.push_back("|-");
+                i++;            // '-' をスキップ
+                pos = i + 1;     // 次の走査開始位置を更新
+                continue;
+            }
+            if (code[i] == '-' && code[i + 1] == '>') {
+                if (pos < i) {
+                    tokens.push_back(code.substr(pos, i - pos));
+                }
+                tokens.push_back("->");
+                i++;            // '>' をスキップ
+                pos = i + 1;     // 次の走査開始位置を更新
+                continue;
+            }
+        }
         if (i == code.size() || code[i] == ' ' || code[i] == '\n' || Syntax_Symbols.count(string(1, code[i]))) {
             if (pos < i) {
                 tokens.push_back(code.substr(pos, i - pos));
@@ -347,13 +565,13 @@ vector<string> tokenize(string code){
 }
 
 // Propのtoken列を受け取り、RPNに変換する
-vector<string> transform_to_RPN(const vector<string>& prop_expression, const set<string>& env){
+vector<string> transform_to_RPN(const vector<string>& prop_expression, const set<string>& env_type){
     // Shunting yard algorithm
     stack<string> op_stack;
     vector<string> output_stack;
 
     for(auto token : prop_expression){
-        if (env.count(token) != 0) {
+        if (env_type.count(token) != 0) {
             output_stack.push_back(token);
         } else if (Logical_Connectives.count(token) != 0) {
             while (!op_stack.empty() && Logical_Connectives.count(op_stack.top()) != 0) {
@@ -396,15 +614,14 @@ vector<string> transform_to_RPN(const vector<string>& prop_expression, const set
 }
 
 // RPNに変換された token列の Prop を計算する
-Prop evaluate_Prop_expression(const vector<string>& prop_expression, const set<string>& env){
-    vector<string> rpn = transform_to_RPN(prop_expression, env);
+Prop evaluate_Prop_expression(const vector<string>& prop_expression, const set<string>& env_type){
+    vector<string> rpn = transform_to_RPN(prop_expression, env_type);
     if (rpn.empty()) {
         throw runtime_error("Syntax error: invalid expression");
     }
     vector<Prop> prop_stack;
     for (const auto& token : rpn) {
-        cout << "RPN Token: " << token << "\n";
-        if (env.count(token) != 0) {
+        if (env_type.count(token) != 0) {
             prop_stack.push_back(PropVar(token));
         } else if (token == "~") {
             if (prop_stack.empty()) {
@@ -441,13 +658,13 @@ Prop evaluate_Prop_expression(const vector<string>& prop_expression, const set<s
     return prop_stack.back();
 }
 
-Sequent evaluate_proof_expression(const vector<string>& proof_expression, const set<string>& env_type, const unordered_map<string, Sequent>& env_prop){
-    // NOTE: 現時点では証明の式の構文解析は未実装
-    throw runtime_error("Proof expression parsing is not implemented yet");
-}
-
 // シークエントを表すトークン列を受け取って、Sequentオブジェクトを返す関数
-Sequent parse_sequent(const vector<string>& sequent_tokens, const set<string>& env){
+Sequent parse_sequent(const vector<string>& sequent_tokens, set<string>& env_type, unordered_map<string, Sequent>& env_sequent){
+    // そもそも既に環境にあるシークエントの変数名が来た場合は、それを返す
+    if (sequent_tokens.size() == 1 && env_sequent.count(sequent_tokens[0]) != 0) {
+        return env_sequent[sequent_tokens[0]];
+    }
+    
     // まずは |- を探す
     auto it = find(sequent_tokens.begin(), sequent_tokens.end(), "|-");
     if (it == sequent_tokens.end()) {
@@ -459,15 +676,161 @@ Sequent parse_sequent(const vector<string>& sequent_tokens, const set<string>& e
     // それぞれのトークン列を Prop オブジェクトに変換する
     unordered_set<Prop> antecedent;
     for (const auto& prop : split(antecedent_tokens, ",")) {
-        antecedent.insert(evaluate_Prop_expression(prop, env));
+        antecedent.insert(evaluate_Prop_expression(prop, env_type));
     }
 
     unordered_set<Prop> succedent;
     for (const auto& prop : split(succedent_tokens, ",")) {
-        succedent.insert(evaluate_Prop_expression(prop, env));
+        succedent.insert(evaluate_Prop_expression(prop, env_type));
     }
 
     return Sequent(antecedent, succedent);
+}
+
+// 証明の式を評価する関数
+Sequent evaluate_proof_expression(const vector<string>& proof_expression, set<string>& env_type, unordered_map<string, Sequent>& env_sequent){
+    int N = proof_expression.size();
+
+    int pos = 0;
+    vector<string> proof_stack;
+    while (pos < N) {
+        string token = proof_expression[pos];
+        proof_stack.push_back(token);
+        if (token == ")") {
+            // 対応する"(" とか "," が出てくるまでスタックからトークンを取り出す
+            vector<Sequent> args; // 関数の引数のリスト
+            vector<string> current_arg; // 現在処理中の引数
+            int paren_count = 1; // "(" と ")" の対応を取るためのカウンタ
+            proof_stack.pop_back();
+            if((!proof_stack.empty()) && proof_stack.back() == "("){ // 0引数関数の処理
+                proof_stack.pop_back();
+            } else { 
+                while (paren_count > 0) {
+                    token = proof_stack.back();
+                    proof_stack.pop_back();
+                    if (token == "(") {
+                        paren_count--;
+                    } else if (token == ")") {
+                        paren_count++;
+                    } else if (token == ",") {
+                        if (paren_count == 1) {
+                            reverse(current_arg.begin(), current_arg.end());
+                            args.push_back(parse_sequent(current_arg, env_type, env_sequent));
+                            current_arg.clear();
+                        } else {
+                            throw runtime_error("Syntax error: unexpected ',' in proof expression");
+                        }
+                    }
+                    if (paren_count > 0 && token != ",") {
+                        current_arg.push_back(token);
+                    } else if (paren_count == 0) {
+                        reverse(current_arg.begin(), current_arg.end());
+                        args.push_back(parse_sequent(current_arg, env_type, env_sequent));
+                        current_arg.clear();
+                        break;
+                    }
+                }
+            }
+            reverse(args.begin(), args.end());
+
+            // 同様の処理を、<,>で行う
+
+            // 最初は>が来る
+            if (proof_stack.empty() || proof_stack.back() != ">") {
+                throw runtime_error("Syntax error: expected '>' in proof expression");
+            }
+            proof_stack.pop_back();
+
+            vector<Prop> template_args; // 関数のテンプレート引数のリスト
+            vector<string> current_template_arg; // 現在処理中のテンプレート引数
+
+            while (!proof_stack.empty()) {
+                string token = proof_stack.back();
+                proof_stack.pop_back();
+                if (token == "<") {
+                    reverse(current_template_arg.begin(), current_template_arg.end());
+                    template_args.push_back(evaluate_Prop_expression(current_template_arg, env_type));
+                    current_template_arg.clear();
+                    break;
+                } else if (token == ",") {
+                    reverse(current_template_arg.begin(), current_template_arg.end());
+                    template_args.push_back(evaluate_Prop_expression(current_template_arg, env_type));
+                    current_template_arg.clear();
+                } else {
+                    current_template_arg.push_back(token);
+                }
+            }
+            reverse(template_args.begin(), template_args.end());
+
+            // この後は推論規則(に対応する関数)が来る
+            if (proof_stack.empty()) {
+                throw runtime_error("Syntax error: expected inference rule in proof expression");
+            }
+            string inference_rule = proof_stack.back();
+            proof_stack.pop_back();
+            if (inference_rules.count(inference_rule) == 0) {
+                throw runtime_error("Syntax error: unknown inference rule '" + inference_rule + "' in proof expression");
+            }
+
+            if (inference_rule_arity[inference_rule] != args.size()) {
+                throw runtime_error("Syntax error: incorrect number of arguments for inference rule '" + inference_rule + "' in proof expression");
+            }
+
+            if (inference_rule_template_arity[inference_rule] != template_args.size()) {
+                throw runtime_error("Syntax error: incorrect number of template arguments for inference rule '" + inference_rule + "' in proof expression");
+            }
+
+            Sequent result;
+            if (inference_rule == "Id") {
+                result = apply_Id(template_args[0]);
+            } else if (inference_rule == "andL") {
+                result = apply_andL(template_args[0], template_args[1], args[0]);
+            } else if (inference_rule == "andR") {
+                result = apply_andR(template_args[0], template_args[1], args[0], args[1]);
+            } else if (inference_rule == "orL") {
+                result = apply_orL(template_args[0], template_args[1], args[0], args[1]);
+            } else if (inference_rule == "orR") {
+                result = apply_orR(template_args[0], template_args[1], args[0]);
+            } else if (inference_rule == "andR") {
+                result = apply_andR(template_args[0], template_args[1], args[0], args[1]);
+            } else if (inference_rule == "orL") {
+                result = apply_orL(template_args[0], template_args[1], args[0], args[1]);
+            } else if (inference_rule == "orR") {
+                result = apply_orR(template_args[0], template_args[1], args[0]);
+            } else if (inference_rule == "impL") {
+                result = apply_implL(template_args[0], template_args[1], args[0], args[1]);
+            } else if (inference_rule == "impR") {
+                result = apply_implR(template_args[0], template_args[1], args[0]);
+            } else if (inference_rule == "notL") {
+                result = apply_notL(template_args[0], args[0]);
+            } else if (inference_rule == "notR") {
+                result = apply_notR(template_args[0], args[0]);
+            } else if (inference_rule == "KL") {
+                result = apply_KL(template_args[0], args[0]);
+            } else if (inference_rule == "KR") {
+                result = apply_KR(template_args[0], args[0]);
+            } else {
+                throw runtime_error("Internal error: unhandled inference rule '" + inference_rule + "' in proof expression");
+            }
+
+            // 内部的に、_から始まる変数を定義して、resultの値を代入する
+            string var_name = get_unique_var_name();
+            env_sequent[var_name] = result;
+            proof_stack.push_back(var_name);
+            
+            
+        }
+        pos++;
+    }
+    // stackの最後には、シークエントを表す変数名が残っているはずなので、それを返す
+    if (proof_stack.size() != 1) {
+        throw runtime_error("Syntax error: invalid proof expression");
+    }
+    string result_var = proof_stack.back();
+    if (env_sequent.count(result_var) == 0) {
+        throw runtime_error("Syntax error: undefined variable '" + result_var + "' in proof expression");
+    }
+    return env_sequent[result_var];
 }
 
 // 型宣言文を処理する関数
@@ -489,9 +852,8 @@ void match_type_statement(const vector<string>& tokens, int& pos, set<string>& e
     }
 }
 
-
 // 型付きの推論規則を処理する関数
-void match_proof_statement(const vector<string>& tokens, int& pos, set<string>& env_type, unordered_map<string, Sequent>& env_prop){
+void match_proof_statement(const vector<string>& tokens, int& pos, set<string>& env_type, unordered_map<string, Sequent>& env_sequent){
     int N = tokens.size();
     // 構文は `[シークエント] 変数名 = 証明のコード` とする
 
@@ -499,6 +861,7 @@ void match_proof_statement(const vector<string>& tokens, int& pos, set<string>& 
     if (tokens[pos] != "[") {
         throw runtime_error("Syntax error: expected '[' at the beginning of proof declaration\n");
     }
+    pos++;  // [をスキップ
 
     // ] を探す
     vector<string> sequent_tokens;
@@ -520,7 +883,7 @@ void match_proof_statement(const vector<string>& tokens, int& pos, set<string>& 
     if (env_type.count(argument_name) != 0){
         throw runtime_error("Syntax error: variable name '" + argument_name + "' is already declared as a Type\n");
     }
-    if (env_prop.count(argument_name) != 0){
+    if (env_sequent.count(argument_name) != 0){
         throw runtime_error("Syntax error: duplicate declaration of argument '" + argument_name + "'\n");
     }
 
@@ -529,6 +892,8 @@ void match_proof_statement(const vector<string>& tokens, int& pos, set<string>& 
     if (pos >= N || tokens[pos] != "="){
         throw runtime_error("Syntax error: expected '=' after argument name in proof declaration\n");
     }
+
+    pos++;  // "=" をスキップ
 
     // ; までをスタックに積む
     vector<string> proof_stack;
@@ -541,17 +906,17 @@ void match_proof_statement(const vector<string>& tokens, int& pos, set<string>& 
     }
     pos++; // ";" をスキップ
 
-    Sequent result = evaluate_proof_expression(proof_stack, env_type, env_prop);
-    Sequent expected = parse_sequent(sequent_tokens, env_type);
+    Sequent result = evaluate_proof_expression(proof_stack, env_type, env_sequent);
+    Sequent expected = parse_sequent(sequent_tokens, env_type, env_sequent);
     if (result != expected){
         throw runtime_error("Syntax error: proof expression does not match the expected sequent\n");
     }
 
-    env_prop.emplace(argument_name, result); // シークエントをパースして、環境に追加する
+    env_sequent.emplace(argument_name, result); // シークエントをパースして、環境に追加する
 }
 
 // autoの推論規則を処理する関数
-void match_auto_statement(const vector<string>& tokens, int& pos, set<string>& env_type, unordered_map<string, Sequent>& env_prop){
+void match_auto_statement(const vector<string>& tokens, int& pos, set<string>& env_type, unordered_map<string, Sequent>& env_sequent){
     int N = tokens.size();
     // 構文は `auto 変数名 = 証明のコード` とする
     // auto から始まる
@@ -568,7 +933,7 @@ void match_auto_statement(const vector<string>& tokens, int& pos, set<string>& e
     if (env_type.count(argument_name) != 0){
         throw runtime_error("Syntax error: variable name '" + argument_name + "' is already declared as a Type\n");
     }
-    if (env_prop.count(argument_name) != 0){
+    if (env_sequent.count(argument_name) != 0){
         throw runtime_error("Syntax error: duplicate declaration of argument '" + argument_name + "'\n");
     }
 
@@ -577,6 +942,7 @@ void match_auto_statement(const vector<string>& tokens, int& pos, set<string>& e
     if (pos >= N || tokens[pos] != "="){
         throw runtime_error("Syntax error: expected '=' after argument name in proof declaration\n");
     }
+    pos++;  //=のスキップ
 
     // ; までをスタックに積む
     vector<string> proof_stack;
@@ -588,12 +954,13 @@ void match_auto_statement(const vector<string>& tokens, int& pos, set<string>& e
         throw runtime_error("Syntax error: expected ';' at the end of proof declaration\n");
     }
     pos++; // ";" をスキップ
-    Sequent result = evaluate_proof_expression(proof_stack, env_type, env_prop);
+    Sequent result = evaluate_proof_expression(proof_stack, env_type, env_sequent);
 
-    env_prop.emplace(argument_name, result); // シークエントをパースして、環境に追加する
+    env_sequent.emplace(argument_name, result); // シークエントをパースして、環境に追加する
 }
 
-void match_print_statement(const vector<string>& tokens, int& pos, set<string>& env_type, unordered_map<string, Sequent>& env_prop){
+// print文を処理する関数
+void match_print_statement(const vector<string>& tokens, int& pos, set<string>& env_type, unordered_map<string, Sequent>& env_sequent){
     int N = tokens.size();
     // 構文は `print 変数名;` とする
     if (tokens[pos] != "print") {
@@ -610,18 +977,18 @@ void match_print_statement(const vector<string>& tokens, int& pos, set<string>& 
     }
     pos++; // ";" をスキップ
 
-    if (env_prop.count(argument_name) == 0) {
+    if (env_sequent.count(argument_name) == 0) {
         throw runtime_error("Syntax error: undefined proof variable '" + argument_name + "' in print statement\n");
     }
 
-    cout << env_prop[argument_name].to_string() << "\n";
+    cout << env_sequent[argument_name].to_string() << endl;
 }
 
 int compile(const string& code){
     vector<string> tokens = tokenize(code);
 
     set<string> env_type; // Typeで宣言された識別子（命題変数）の列挙
-    unordered_map<string, Sequent> env_proof; // 証明(Sequent)の列挙（未使用/拡張予定）
+    unordered_map<string, Sequent> env_sequent; // 証明(Sequent)の列挙（未使用/拡張予定）
     int N = tokens.size();
 
 
@@ -631,11 +998,11 @@ int compile(const string& code){
         if (tokens[pos] == "Type"){
             match_type_statement(tokens, pos, env_type);
         } else if (tokens[pos] == "["){
-            match_proof_statement(tokens, pos, env_type, env_proof);
+            match_proof_statement(tokens, pos, env_type, env_sequent);
         } else if (tokens[pos] == "auto"){
-            match_auto_statement(tokens, pos, env_type, env_proof);
+            match_auto_statement(tokens, pos, env_type, env_sequent);
         } else if (tokens[pos] == "print"){
-            match_print_statement(tokens, pos, env_type, env_proof);
+            match_print_statement(tokens, pos, env_type, env_sequent);
         } else if (tokens[pos] == ";"){
             pos++; // 空の文を許容する
         } else {
@@ -643,8 +1010,10 @@ int compile(const string& code){
         }
     }
 
-    return 0; // とりあえず成功とする
+    return 0; 
 }
+
+
 
 
 int main(){
@@ -653,24 +1022,24 @@ int main(){
 
     // ========= Write your code here! ============================================================================
                                     
+    // ~(A * B) |- ~A を証明するコード
     string code = "Type A;\n"
-                  "Type B;\n";
+                  "Type B;\n"
+
+                  "[A |- A] A_id = Id<A>();\n"
+                  "[B |- B] B_id = Id<B>();\n"
+
+                  "[A,B |- A] AB_A = KL<B>(A_id);\n"
+                  "[A,B |- B] AB_B = KL<A>(B_id);\n"
+
+                  "[A,B |- A*B] AB_AB = andR<A, B>(AB_A, AB_B);\n"
+                  "[~(A*B),A,B |- ] nAB_AB = notL<A*B>(AB_AB);\n"
+                  "[~(A*B) |- ~A, ~B] nAB_nA_nB = notR<A>(notR<B>(nAB_AB));\n"
+                  "[~(A*B) |- ~A + ~B] nAB_nAnB = orR<~A, ~B>(nAB_nA_nB);\n"
+
+                  "print nAB_nAnB;";
                                   
     // ============================================================================================================
-
-    vector<string> tokens = tokenize(code);
-    for (const auto& token : tokens) {
-        if (keywords.count(token)) {
-            cout << "Keyword: " << token << "\n";
-        } else if (Logical_Connectives.count(token)) {
-            cout << "Logical Connective: " << token << "\n";
-        } else {
-            cout << "Identifier: " << token << "\n";
-        }
-    }
-
-    Prop res = evaluate_Prop_expression({"A", "*","~" ,"B", "+","~", "C"}, {"A", "B", "C"});
-    cout << "Evaluated Prop expression: " << res.to_string() << "\n";
 
     try {
         compile(code);
@@ -822,20 +1191,20 @@ Sequent notL<A : Prop>(S : Sequent){
 
 
 /*
-Prop A;
-Prop B;
+Type A;
+Type B;
 
-auto A_id = Id<A>();
-auto B_id = Id<B>();
+[A |- A] A_id = Id<A>();　
+[B |- B] B_id = Id<B>();
 
-auto AB_A = KL<B>(A_id);
-auto AB_B = KL<A>(B_id);
+[A,B |- A] AB_A = KL<B>(A_id);
+[A,B |- B] AB_B = KL<A>(B_id);
 
-auto AB_AB = andR<A, B>(AB_A, AB_B);
-auto nAB_AB = notL<A*B>(AB_AB);
-auto nAB_nA_nB = notR<A>(notR<B>(nAB_AB));
+[A, B |- A * B] AB_AB = andR<A, B>(AB_A, AB_B);
+[A, B, ~(A*B) |- ] nAB_AB = notL<A*B>(AB_AB);
+[~(A*B) |- ~A, ~B] nAB_nA_nB = notR<A>(notR<B>(nAB_AB));
 
-auto nAB_nAnB = orR<A, B>(nAB_nA_nB);
+[~(A*B) |- ~A + ~B] nAB_nAnB = orR<A, B>(nAB_nA_nB);
 
 print nAB_nAnB;
 

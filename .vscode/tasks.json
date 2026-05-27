@@ -6,6 +6,7 @@
             "label": "g++ build active file",
             "command": "/usr/bin/g++",
             "args": [
+                "-fdiagnostics-color=always",
                 "-g",
                 "${file}",
                 "-o",
@@ -21,7 +22,7 @@
                 "kind": "build",
                 "isDefault": true
             },
-            "detail": "コンパイラ: /usr/bin/g++"
+            "detail": "デバッガーによって生成されたタスクです。"
         }
     ]
 }
