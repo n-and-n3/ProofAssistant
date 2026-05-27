@@ -981,7 +981,7 @@ void match_print_statement(const vector<string>& tokens, int& pos, set<string>& 
         throw runtime_error("Syntax error: undefined proof variable '" + argument_name + "' in print statement\n");
     }
 
-    cout << env_sequent[argument_name].to_string() << endl;
+    cout << "Proved : " << env_sequent[argument_name].to_string() << endl;
 }
 
 int compile(const string& code){
@@ -1022,7 +1022,7 @@ int main(){
 
     // ========= Write your code here! ============================================================================
                                     
-    // ~(A * B) |- ~A を証明するコード
+    // ~(A * B) |- ~A + ~B を証明するコード
     string code = "Type A;\n"
                   "Type B;\n"
 
