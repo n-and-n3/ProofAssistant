@@ -2,12 +2,11 @@ Type A;
 Type B;
 Type C;
 
-[A |- A] A_id = Id<A>();
+auto A_id = Id<A>();
 auto B_id = Id<B>();
-[C |- C] C_id = Id<C>();
+auto C_id = Id<C>();
 
-
-[C |- C,A] C_AC = KR<A>(C_id);
+auto C_AC = KR<A>(C_id);
 auto AC_A = KL<C>(A_id);
 auto CCA_A = impL<C,A>(C_AC, AC_A);
 auto BCCA_A = KL<B>(CCA_A);
