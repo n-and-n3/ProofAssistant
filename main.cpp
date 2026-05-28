@@ -17,6 +17,7 @@
 #include <stack>
 #include <stdexcept>
 #include <memory>
+#include <fstream>
 
 using namespace std;
 
@@ -442,34 +443,34 @@ Sequent apply_orR(Prop A, Prop B, Sequent sequent){
     return Sequent(sequent.antecedent, new_succedent);
 }
 
-Sequent apply_implL(Prop A, Prop B, Sequent sequent1, Sequent sequent2){
+Sequent apply_impL(Prop A, Prop B, Sequent sequent1, Sequent sequent2){
     // Γ |- Δ, A と B, Γ |- Δ から A -> B, Γ |- Δ を導出する
     if (sequent1.succedent.find(A) == sequent1.succedent.end()) {
-        throw runtime_error("Inference error: succedent of first sequent does not contain " + A.to_string() + " in apply_implL");
+        throw runtime_error("Inference error: succedent of first sequent does not contain " + A.to_string() + " in apply_impL");
     }
     if (sequent2.antecedent.find(B) == sequent2.antecedent.end()) {
-        throw runtime_error("Inference error: antecedent of second sequent does not contain " + B.to_string() + " in apply_implL");
+        throw runtime_error("Inference error: antecedent of second sequent does not contain " + B.to_string() + " in apply_impL");
     }
     unordered_set<Prop> new_succedent1 = sequent1.succedent;
     unordered_set<Prop> new_antecedent2 = sequent2.antecedent;
     new_succedent1.erase(A);
     new_antecedent2.erase(B);
     if (sequent1.antecedent != new_antecedent2 || new_succedent1 != sequent2.succedent) {
-        throw runtime_error("Inference error: antecedents or succedents do not match after erasing A and B in apply_implL");
+        throw runtime_error("Inference error: antecedents or succedents do not match after erasing A and B in apply_impL");
     }
     new_antecedent2.insert(PropImp(A, B));
     return Sequent(new_antecedent2, sequent2.succedent);
 }
 
-Sequent apply_implR(Prop A, Prop B, Sequent sequent){
+Sequent apply_impR(Prop A, Prop B, Sequent sequent){
     // A, Γ |- Δ, B から Γ |- Δ, A -> B を導出する
     unordered_set<Prop> new_antecedent = sequent.antecedent;
     unordered_set<Prop> new_succedent = sequent.succedent;
     if (new_antecedent.find(A) == new_antecedent.end()){
-        throw runtime_error("Inference error: antecedent does not contain " + A.to_string() + " in apply_implR");
+        throw runtime_error("Inference error: antecedent does not contain " + A.to_string() + " in apply_impR");
     }
     if (new_succedent.find(B) == new_succedent.end()){
-        throw runtime_error("Inference error: succedent does not contain " + B.to_string() + " in apply_implR");
+        throw runtime_error("Inference error: succedent does not contain " + B.to_string() + " in apply_impR");
     }
     new_antecedent.erase(A);
     new_succedent.erase(B);
@@ -658,13 +659,18 @@ Prop evaluate_Prop_expression(const vector<string>& prop_expression, const set<s
     return prop_stack.back();
 }
 
-// シークエントを表すトークン列を受け取って、Sequentオブジェクトを返す関数
-Sequent parse_sequent(const vector<string>& sequent_tokens, set<string>& env_type, unordered_map<string, Sequent>& env_sequent){
-    // そもそも既に環境にあるシークエントの変数名が来た場合は、それを返す
+// 既に定義されているシークエントの識別子が与えられたとき、そのシークエントを返す関数
+Sequent read_sequent_identifier(const vector<string>& sequent_tokens, set<string>& env_type, unordered_map<string, Sequent>& env_sequent){
     if (sequent_tokens.size() == 1 && env_sequent.count(sequent_tokens[0]) != 0) {
         return env_sequent[sequent_tokens[0]];
+    } else {
+        throw runtime_error("Syntax error: expected sequent identifier or sequent expression\n");
     }
-    
+}
+
+// シークエントを表すトークン列を受け取って、Sequentオブジェクトを返す関数
+Sequent parse_sequent(const vector<string>& sequent_tokens, set<string>& env_type, unordered_map<string, Sequent>& env_sequent){
+
     // まずは |- を探す
     auto it = find(sequent_tokens.begin(), sequent_tokens.end(), "|-");
     if (it == sequent_tokens.end()) {
@@ -693,10 +699,30 @@ Sequent evaluate_proof_expression(const vector<string>& proof_expression, set<st
 
     int pos = 0;
     vector<string> proof_stack;
+    int height = 0;
+    vector<int> height_stack;
     while (pos < N) {
         string token = proof_expression[pos];
         proof_stack.push_back(token);
+        // それが関数実行の ")" なのか、Prop式の中の")"なのかを見分ける必要がある。
+        // 関数実行の開き括弧は ">(" になっているはずなので、">("で開かれた括弧の深さ(height)を保存しておき、
+        // その深さを閉じる ")" が来たときだけ関数適用を行う。
+        if (token == "(") {
+            height++;
+            if (proof_stack.size() >= 2 && proof_stack[proof_stack.size() - 2] == ">") {
+                height_stack.push_back(height);
+            }
+        }
+
         if (token == ")") {
+            // まずは括弧の深さを見て「関数引数の閉じ括弧」かどうか判定する。
+            if (height_stack.empty() || height_stack.back() != height) {
+                height--; // Prop式など、関数呼び出し以外の括弧を閉じる
+                pos++;
+                continue;
+            }
+            height_stack.pop_back();
+
             // 対応する"(" とか "," が出てくるまでスタックからトークンを取り出す
             vector<Sequent> args; // 関数の引数のリスト
             vector<string> current_arg; // 現在処理中の引数
@@ -715,7 +741,7 @@ Sequent evaluate_proof_expression(const vector<string>& proof_expression, set<st
                     } else if (token == ",") {
                         if (paren_count == 1) {
                             reverse(current_arg.begin(), current_arg.end());
-                            args.push_back(parse_sequent(current_arg, env_type, env_sequent));
+                            args.push_back(read_sequent_identifier(current_arg, env_type, env_sequent));
                             current_arg.clear();
                         } else {
                             throw runtime_error("Syntax error: unexpected ',' in proof expression");
@@ -725,7 +751,7 @@ Sequent evaluate_proof_expression(const vector<string>& proof_expression, set<st
                         current_arg.push_back(token);
                     } else if (paren_count == 0) {
                         reverse(current_arg.begin(), current_arg.end());
-                        args.push_back(parse_sequent(current_arg, env_type, env_sequent));
+                        args.push_back(read_sequent_identifier(current_arg, env_type, env_sequent));
                         current_arg.clear();
                         break;
                     }
@@ -798,9 +824,9 @@ Sequent evaluate_proof_expression(const vector<string>& proof_expression, set<st
             } else if (inference_rule == "orR") {
                 result = apply_orR(template_args[0], template_args[1], args[0]);
             } else if (inference_rule == "impL") {
-                result = apply_implL(template_args[0], template_args[1], args[0], args[1]);
+                result = apply_impL(template_args[0], template_args[1], args[0], args[1]);
             } else if (inference_rule == "impR") {
-                result = apply_implR(template_args[0], template_args[1], args[0]);
+                result = apply_impR(template_args[0], template_args[1], args[0]);
             } else if (inference_rule == "notL") {
                 result = apply_notL(template_args[0], args[0]);
             } else if (inference_rule == "notR") {
@@ -817,6 +843,9 @@ Sequent evaluate_proof_expression(const vector<string>& proof_expression, set<st
             string var_name = get_unique_var_name();
             env_sequent[var_name] = result;
             proof_stack.push_back(var_name);
+
+            // 関数引数の閉じ括弧 ")" を処理したので深さを下げる
+            height--;
             
             
         }
@@ -1015,32 +1044,24 @@ int compile(const string& code){
 
 
 
+int main(int argc, char* argv[]) {
+    if (argc != 2) {
+        std::cerr << "使い方: " << argv[0] << " <読み込むファイル名.txt>" << std::endl;
+        return 1;
+    }
 
-int main(){
-    ios::sync_with_stdio(false);
-    std::cin.tie(nullptr);
+    std::ifstream inputFile(argv[1]);
 
-    // ========= Write your code here! ============================================================================
-                                    
-    // ~(A * B) |- ~A + ~B を証明するコード
-    string code = "Type A;\n"
-                  "Type B;\n"
+    if (!inputFile.is_open()) {
+        std::cerr << "エラー: ファイルを開けませんでした。" << std::endl;
+        return 1; 
+    }
 
-                  "[A |- A] A_id = Id<A>();\n"
-                  "[B |- B] B_id = Id<B>();\n"
-
-                  "[A,B |- A] AB_A = KL<B>(A_id);\n"
-                  "[A,B |- B] AB_B = KL<A>(B_id);\n"
-
-                  "[A,B |- A*B] AB_AB = andR<A, B>(AB_A, AB_B);\n"
-                  "[~(A*B),A,B |- ] nAB_AB = notL<A*B>(AB_AB);\n"
-                  "[~(A*B) |- ~A, ~B] nAB_nA_nB = notR<A>(notR<B>(nAB_AB));\n"
-                  "[~(A*B) |- ~A + ~B] nAB_nAnB = orR<~A, ~B>(nAB_nA_nB);\n"
-
-                  "print nAB_nAnB;";
-                                  
-    // ============================================================================================================
-
+    // --- ここからが一括読み込みの処理 ---
+    std::stringstream buffer;
+    buffer << inputFile.rdbuf(); // ファイルのバッファを全てstringstreamに流し込む
+    std::string code = buffer.str(); // string型に変換
+    // ------------------------------------
     try {
         compile(code);
     } catch (const runtime_error& e) {

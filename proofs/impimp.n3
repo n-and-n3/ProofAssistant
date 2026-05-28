@@ -1,0 +1,16 @@
+Type A;
+Type B;
+Type C;
+
+[A |- A, B] q1 = KR<B>(Id<A>());
+[B, A |- B] q2 = KL<A>(Id<B>());
+[A->B, A |- B] sAB = impL<A, B>(q1, q2);
+
+[A->B, A |- B, C] p1 = KR<C>(sAB);
+[C, A, A->B |- C] p2 = KL<A->B>(KL<A>(Id<C>()));
+[B->C, A->B, A |- C] s1 = impL<B, C>(p1, p2);
+
+[~C, B->C, A->B, A |- ] s0 = notL<C>(s1);
+[A->B, B->C, ~C |- ~A] goal = notR<A>(s0);
+
+print goal;

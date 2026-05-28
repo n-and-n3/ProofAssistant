@@ -1,0 +1,15 @@
+Type A;
+Type B;
+
+[A |- A] A_id = Id<A>();
+[B |- B] B_id = Id<B>();
+
+[A,B |- A] AB_A = KL<B>(A_id);
+[A,B |- B] AB_B = KL<A>(B_id);
+
+[A,B |- A*B] AB_AB = andR<A, B>(AB_A, AB_B);
+[~(A*B),A,B |- ] nAB_AB = notL<A*B>(AB_AB);
+[~(A*B) |- ~A, ~B] nAB_nA_nB = notR<A>(notR<B>(nAB_AB));
+[~(A*B) |- ~A + ~B] nAB_nAnB = orR<~A, ~B>(nAB_nA_nB);
+
+print nAB_nAnB;
