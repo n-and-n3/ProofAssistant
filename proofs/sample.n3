@@ -1,0 +1,8 @@
+Type B;
+Type A;
+auto P0 = Id<A>();
+auto P1 = KR<B>(P0);
+auto P2 = Id<B>();
+auto P3 = KL<A>(P2);
+auto P4 = impL<A,B>(P1, P3);
+print P4;
