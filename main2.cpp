@@ -226,17 +226,31 @@ vector<string> tokenize(string code){
 
 
 struct ASTNode{
-    string NodeType;
+    string kind;
+    string content;
     vector<ASTNode*> children;
 
-    ASTNode(string _nodetype, vector<ASTNode*> _children = {}) : NodeType(_nodetype), children(_children) {}  
+    ASTNode(string _nodetype, string _content, vector<ASTNode*> _children = {}) : kind(_nodetype), content(_content), children(_children) {}  
 };
 
+ASTNode* parse_prop(const vector<string> &tokens, int &pc);
+ASTNode* parse_type_expr(const vector<string> &tokens, int &pc);
 
-ASTNode* parse_identifier(const vector<string> &tokens, int &pc){
+
+ASTNode* parse_type_identifier(const vector<string> &tokens, int &pc){
     assert(pc < ssize(tokens));
     if (!keywords.contains(tokens[pc]) && !Syntax_Symbols.contains(tokens[pc])){
-        ASTNode* node = new ASTNode("identifier", {});
+        ASTNode* node = new ASTNode("type_identifier", tokens[pc]);
+        pc += 1;
+        return node;
+    } else {
+        throw runtime_error("error\n");
+    }
+}
+ASTNode* parse_prop_identifier(const vector<string> &tokens, int &pc){
+    assert(pc < ssize(tokens));
+    if (!keywords.contains(tokens[pc]) && !Syntax_Symbols.contains(tokens[pc])){
+        ASTNode* node = new ASTNode("prop_identifier", tokens[pc]);
         pc += 1;
         return node;
     } else {
@@ -247,7 +261,6 @@ ASTNode* parse_identifier(const vector<string> &tokens, int &pc){
 ASTNode* parse_expression(const vector<string> &tokens, int &pc){
     // 関数式を解析する
     assert(pc < ssize(tokens));
-    // WIP
     // 関数一覧の要素 <型, 型, ...>(命題, 命題, ...)
     if (inference_rules.contains(tokens[pc])){
         string rule_name = tokens[pc];
@@ -256,7 +269,7 @@ ASTNode* parse_expression(const vector<string> &tokens, int &pc){
         pc += 1;
         vector<ASTNode*> type_args;
         rep(_, inference_rule_template_arity[rule_name]){
-            type_args.push_back(parse_identifier(tokens, pc));
+            type_args.push_back(parse_type_expr(tokens, pc));
             if (pc < ssize(tokens) && tokens[pc] == ","){
                 pc += 1; // skip ','
             }
@@ -274,9 +287,16 @@ ASTNode* parse_expression(const vector<string> &tokens, int &pc){
         }
         assert(pc < ssize(tokens) && tokens[pc] == ")");
         pc += 1; // skip ')'
-        ASTNode* node = new ASTNode("function", {new ASTNode(rule_name, type_args), new ASTNode("args", prop_args)});
+        ASTNode* node = new ASTNode("inference_rules", rule_name, {new ASTNode("type_args", "", type_args), new ASTNode("prop_args", "", prop_args)});
         return node;
     }
+
+    // identifier の場合
+    if (!keywords.contains(tokens[pc]) && !Syntax_Symbols.contains(tokens[pc])){
+        auto tmp = parse_prop_identifier(tokens, pc);
+        return tmp;
+    }
+
     return nullptr;
 }
 
@@ -286,12 +306,12 @@ ASTNode* parse_factor(const vector<string> &tokens, int &pc){
     assert(pc < ssize(tokens));
     if (tokens[pc] == "("){
         pc += 1;
-        auto tmp = parse_expression(tokens, pc);
+        auto tmp = parse_prop(tokens, pc);
         assert(pc < ssize(tokens) && tokens[pc] == ")");
         pc += 1;
         return tmp;
     } else {
-        return parse_identifier(tokens, pc);
+        return parse_prop_identifier(tokens, pc);
     }
 }
 
@@ -301,7 +321,7 @@ ASTNode* parse_not(const vector<string> &tokens, int &pc){
     if (tokens[pc] == "~"){
         pc += 1;
         auto tmp = parse_not(tokens, pc);
-        return new ASTNode("not", {tmp});
+        return new ASTNode("logical","not", {tmp});
     } else {
         auto tmp = parse_factor(tokens, pc);
         return tmp;
@@ -316,7 +336,7 @@ ASTNode* parse_and(const vector<string> &tokens, int &pc){
     while (pc < ssize(tokens) && tokens[pc] == "*"){
         pc += 1;
         auto right = parse_not(tokens, pc);
-        left = new ASTNode("and", {left, right});
+        left = new ASTNode("logical", "and", {left, right});
     }
     return left;
 }
@@ -329,7 +349,7 @@ ASTNode* parse_or(const vector<string> &tokens, int &pc){
     while (pc < ssize(tokens) && tokens[pc] == "+"){
         pc += 1;
         auto right = parse_and(tokens, pc);
-        left = new ASTNode("or", {left, right});
+        left = new ASTNode("logical", "or", {left, right});
     }
     return left;
 }
@@ -342,7 +362,7 @@ ASTNode* parse_imp(const vector<string> &tokens, int &pc){
     if (pc < ssize(tokens) && tokens[pc] == "->"){
         pc += 1;
         auto right = parse_imp(tokens, pc);
-        return new ASTNode("imp", {left, right});
+        return new ASTNode("logical", "imp", {left, right});
     }
     return left;
 }
@@ -353,11 +373,16 @@ ASTNode* parse_prop(const vector<string> &tokens, int &pc){
     return parse_imp(tokens, pc);
 }
 
+ASTNode* parse_type_expr(const vector<string> &tokens, int &pc){
+    // type template argument is parsed with the same grammar as propositions
+    return parse_prop(tokens, pc);
+}
+
 
 ASTNode* parse_propargs(const vector<string> &tokens, int &pc){
     // prop, prop, ...
     assert(pc < ssize(tokens));
-    ASTNode* main = new ASTNode("code",{});
+    ASTNode* main = new ASTNode("code", "", {});
     if (pc >= ssize(tokens) || tokens[pc] == "|-" || tokens[pc] == "]" || tokens[pc] == ")" || tokens[pc] == ";"){
         return main;
     }
@@ -377,12 +402,12 @@ ASTNode* parse_sequent(const vector<string> &tokens, int &pc){
     assert(pc < ssize(tokens) && tokens[pc] == "|-");
     pc += 1;
     auto tmp2 = parse_propargs(tokens, pc);
-    ASTNode* node = new ASTNode("sequent", {tmp1, tmp2});
+    ASTNode* node = new ASTNode("sequent", "", {tmp1, tmp2});
     return node;
 }
 
 ASTNode* parse_code(const vector<string> &tokens, int &pc){
-    ASTNode* main = new ASTNode("code",{});
+    ASTNode* main = new ASTNode("code", "", {});
     while (pc < ssize(tokens)){
         string key = tokens[pc];
         if (key == ";"){
@@ -392,27 +417,27 @@ ASTNode* parse_code(const vector<string> &tokens, int &pc){
             if (key == "print"){
                 // print identifier;
                 pc += 1;
-                auto tmp = parse_identifier(tokens, pc);
-                ASTNode* state = new ASTNode("print",{tmp});
+                auto tmp = parse_prop_identifier(tokens, pc);
+                ASTNode* state = new ASTNode("prefix", "print", {tmp});
                 main->children.push_back(state);
                 assert(pc < ssize(tokens) && tokens[pc] == ";");
                 pc += 1;
             } else if (key == "Type"){
                 // Type identifier;
                 pc += 1;
-                auto tmp = parse_identifier(tokens, pc);
-                ASTNode* state = new ASTNode("Type", {tmp});
+                auto tmp = parse_type_identifier(tokens, pc);
+                ASTNode* state = new ASTNode("prefix", "Type", {tmp});
                 main->children.push_back(state);
                 assert(pc < ssize(tokens) && tokens[pc] == ";");
                 pc += 1;
             } else if (key == "auto"){
                 // auto identifier = expression;
                 pc += 1;
-                auto tmp1 = parse_identifier(tokens, pc);
+                auto tmp1 = parse_prop_identifier(tokens, pc);
                 assert(pc < ssize(tokens) && tokens[pc] == "=");
                 pc += 1;
                 auto tmp2 = parse_expression(tokens, pc);
-                ASTNode* state = new ASTNode("auto", {tmp1, tmp2});
+                ASTNode* state = new ASTNode("prefix", "auto", {tmp1, tmp2});
                 main->children.push_back(state);
                 assert(pc < ssize(tokens) && tokens[pc] == ";");
                 pc += 1;
@@ -422,11 +447,11 @@ ASTNode* parse_code(const vector<string> &tokens, int &pc){
                 auto tmp1 = parse_sequent(tokens, pc);
                 assert(pc < ssize(tokens) && tokens[pc] == "]");
                 pc += 1;
-                auto tmp2 = parse_identifier(tokens, pc);
+                auto tmp2 = parse_prop_identifier(tokens, pc);
                 assert(pc < ssize(tokens) && tokens[pc] == "=");
                 pc += 1;
                 auto tmp3 = parse_expression(tokens, pc);
-                ASTNode* state = new ASTNode("var", {tmp1, tmp2, tmp3});
+                ASTNode* state = new ASTNode("prefix", "var", {tmp1, tmp2, tmp3});
                 main->children.push_back(state);
                 assert(pc < ssize(tokens) && tokens[pc] == ";");
                 pc += 1;
@@ -439,17 +464,16 @@ ASTNode* parse_code(const vector<string> &tokens, int &pc){
 
     // EoF
     if (pc == ssize(tokens)){
-        return nullptr;
+        return main;
     } else {
         throw runtime_error("error\n");
     }
 
-    return main;
 }
 
 void print_ast(ASTNode* node, int depth = 0) {
     if (!node) return;
-    cout << string(depth * 2, ' ') << node->NodeType << "\n";
+    cout << string(depth * 2, ' ') << node->kind << " " << node->content << "\n";
     for (auto child : node->children) {
         print_ast(child, depth + 1);
     }
@@ -474,12 +498,25 @@ int compile(const string& code) {
 
 
 // ===============================================================================
+int main(int argc, char* argv[]) {
+    if (argc != 2) {
+        std::cerr << "使い方: " << argv[0] << " <読み込むファイル名.txt>" << std::endl;
+        return 1;
+    }
 
-int main(){
-    ios::sync_with_stdio(false);
-    std::cin.tie(nullptr);
+    std::ifstream inputFile(argv[1]);
 
-    string code = "Type A; auto x = Id<A>();";
+    if (!inputFile.is_open()) {
+        std::cerr << "エラー: ファイルを開けませんでした。" << std::endl;
+        return 1; 
+    }
+
+    // --- ここからが一括読み込みの処理 ---
+    std::stringstream buffer;
+    buffer << inputFile.rdbuf(); // ファイルのバッファを全てstringstreamに流し込む
+    std::string code = buffer.str(); // string型に変換
+    // ------------------------------------
+
     int result = compile(code);
     cout << result << "\n";
 }
