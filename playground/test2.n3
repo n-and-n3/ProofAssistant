@@ -1,0 +1,46 @@
+Type A;
+Type B;
+Type C;
+
+auto A_id = Id<A>();
+auto B_id = Id<B>();
+auto C_id = Id<C>();
+
+auto C_AC = KR<A>(C_id);
+auto AC_A = KL<C>(A_id);
+auto CCA_A = impL<C,A>(C_AC, AC_A);
+auto BCCA_A = KL<B>(CCA_A);
+auto BCA_AB = KL<C->A>(KR<A>(B_id));
+auto BBCCA_A = impL<B,C>(BCA_AB, BCCA_A);
+auto BCCA_BA = impR<B,A>(BBCCA_A);
+auto ABBCCA_BA = KL<A->B>(BCCA_BA);
+
+print ABBCCA_BA;
+
+auto A_BA = KR<B>(A_id);
+auto BA_B = KL<A>(B_id);
+auto AAB_B = impL<A,B>(A_BA, BA_B);
+auto CAAB_B = KL<C>(AAB_B);
+auto CAB_BC = KL<A->B>(KR<B>(C_id));
+auto CCAAB_B = impL<C,A>(CAB_BC, CAAB_B);
+auto CAAB_CB = impR<C,B>(CCAAB_B);
+auto BCCAAB_CB = KL<B->C>(CAAB_CB);
+
+print BCCAAB_CB;
+
+auto B_CB = KR<C>(B_id);
+auto CB_C = KL<B>(C_id);
+auto BBC_C = impL<B,C>(B_CB, CB_C);
+auto ABBC_C = KL<A>(BBC_C);
+auto BAC_CA = KL<B->C>(KR<C>(A_id));
+auto AABBC_C = impL<A,B>(BAC_CA, ABBC_C);
+auto ABBC_AC = impR<A,C>(AABBC_C);
+auto CAABBC_AC = KL<C->A>(ABBC_AC);
+
+print CAABBC_AC;
+
+auto ABBCCA_rotinv = andR<(A->C)*(C->B), B->A>(andR<A->C,C->B>(CAABBC_AC, BCCAAB_CB), ABBCCA_BA);
+print ABBCCA_rotinv;
+
+auto rot_rotinv = andL<(A->B)*(B->C), C->A>(andL<A->B,B->C>(ABBCCA_rotinv));
+print rot_rotinv;

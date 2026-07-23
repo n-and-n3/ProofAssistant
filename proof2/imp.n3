@@ -1,0 +1,22 @@
+[X->Y, X |- Y] MP<X,Y>(){
+    [X |- X, Y] q1 = KR<Y>(Id<X>());
+    [Y, X |- Y] q2 = KL<X>(Id<Y>());
+    [X->Y, X |- Y] sXY = impL<X, Y>(q1, q2);
+    return sXY;
+}
+
+Type A;
+Type B;
+Type C;
+
+
+[A, A->B |- B] s0 = MP<A,B>();
+
+[A->B, A |- B, C] p1 = KR<C>(sAB);
+[C, A, A->B |- C] p2 = KL<A->B>(KL<A>(Id<C>()));
+[B->C, A->B, A |- C] s1 = impL<B, C>(p1, p2);
+
+[~C, B->C, A->B, A |- ] s0 = notL<C>(s1);
+[A->B, B->C, ~C |- ~A] goal = notR<A>(s0);
+
+print goal;

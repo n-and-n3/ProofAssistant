@@ -1,0 +1,4 @@
+Type P;
+auto tmp = Id<P>();
+auto ans = impR<P,P>(tmp);
+print ans;

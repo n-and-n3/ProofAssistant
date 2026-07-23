@@ -1,0 +1,24 @@
+thm MP<A,B>(){
+  [A|-A,B] p1 = KR<B>(Id<A>());
+  auto p2 = KL<A>(Id<B>());
+  [A,A->B|-B] mp= impL<A,B>(p1,p2);
+  prf mp;
+}
+
+thm ch<A,B>(S){
+    assert A|B in S.succedent;
+
+    [*|-B|A,**] ans = /*省略*/;
+    prf ans;
+}
+// 上2つはこれで再利用できると嬉しい
+
+thm main<A,B>(){
+    autoproof [A,A->B|-B] mp;
+    prf mp;
+}
+// この上下二つが同じ標準出力になって欲しい(お祈り)
+thm main<A,B>(){
+    [A,A->B|-B] mp = impL<A,B>(KR<B>(Id<A>()),KL<A>(Id<B>()));
+    prf mp;
+}

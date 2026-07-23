@@ -1,0 +1,7 @@
+thm ch<A,B>(S){
+    assert A|B in S.succedent;
+
+    prf ans;
+}
+
+

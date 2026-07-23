@@ -14,6 +14,15 @@
 - `./main ./proofs/De_Morgan.n3`
 - `./main ./proofs/impimp.n3`
 
+Pythonで証明を自動生成:
+
+- `python3 main.py` : `|- A->A` の証明を標準出力へ生成
+- `python3 main.py 'A->B, B->C, ~C |- ~A'` : 指定したシークエントの証明を生成
+- `python3 main.py > ./proofs/auto_iff.n3`
+- `./main ./proofs/auto_iff.n3`
+
+Pythonの標準出力は、そのまま保存して実行できる `.n3` だけです。構文エラーや証明不能のメッセージは標準エラーへ出力され、終了コードは非0になります。生成される最後の証明宣言には `[期待シークエント]` が付き、C++実行時にも目標との完全一致を検証します。
+
 サニタイザ付き（開発用）:
 
 - `g++ -g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer main.cpp -o main_asan && ./main_asan ./proofs/impimp.n3`
@@ -121,5 +130,4 @@
 	などは壊れやすいです。
 	- 回避策: 先に `[ ... ] name = ...;` や `auto name = ...;` で中間シークエントに名前を付けてから、引数は **変数名だけ**を渡してください。
 - エラーは基本的に `runtime_error` で落ちます（`expected '|-'` / `unknown token` / 推論前提不成立など）
-
 
