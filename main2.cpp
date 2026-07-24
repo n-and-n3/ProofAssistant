@@ -863,8 +863,9 @@ shared_ptr<ASTNode> parse_code(const vector<Token> &tokens, int &pc){
         SourceSpan key_span = tokens[pc].source_span;
         string key = tokens[pc];
         if (key == ";"){
-            pc += 1;
-            return parse_code(tokens, pc);
+            while (pc < ssize(tokens) && tokens[pc] == ";"){
+                pc += 1;
+            }
         } else {
             if (key == "print"){
                 // print identifier;
