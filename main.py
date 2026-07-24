@@ -7,6 +7,7 @@ import re
 import sys
 from dataclasses import dataclass
 from functools import cache
+from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
 
@@ -680,6 +681,12 @@ def _argument_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SEQUENT,
         help=f"証明するシークエント（省略時: {DEFAULT_SEQUENT!r}）",
     )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        help="生成した .n3 を指定したファイルへ保存します。",
+    )
     return parser
 
 
@@ -687,7 +694,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _argument_parser()
     args = parser.parse_args(argv)
     try:
-        sys.stdout.write(generate_n3(args.sequent))
+        generated = generate_n3(args.sequent)
+        if args.output is None:
+            sys.stdout.write(generated)
+        else:
+            args.output.write_text(generated, encoding="utf-8")
     except ProofAssistantError as error:
         parser.exit(1, f"error: {error}\n")
     except ProofConstructionError as error:

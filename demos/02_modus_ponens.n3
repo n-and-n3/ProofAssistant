@@ -1,0 +1,5 @@
+Type A;
+Type B;
+
+[A, A->B |- B] modus_ponens = impL<A,B>(KR<B>(Id<A>()), KL<A>(Id<B>()));
+print modus_ponens;

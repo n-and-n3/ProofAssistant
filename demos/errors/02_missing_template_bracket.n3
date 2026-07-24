@@ -1,0 +1,2 @@
+Type A;
+auto identity = Id<A();
