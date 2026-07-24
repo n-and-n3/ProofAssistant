@@ -136,7 +136,7 @@ set<string> Syntax_Symbols = {
 };
 
 set<string> inference_rules = {
-    "andL", "andR", "orL", "orR", "impL", "impR", "notL", "notR", "Id", "KL", "KR"
+    "andL", "andR", "orL", "orR", "impL", "impR", "notL", "notR", "Id", "KL", "KR", "cut"
 };
 
 unordered_map<string, int> inference_rule_arity = {
@@ -150,7 +150,8 @@ unordered_map<string, int> inference_rule_arity = {
     {"notR", 1},
     {"Id", 0},
     {"KL", 1},
-    {"KR", 1}
+    {"KR", 1},
+    {"cut", 2}
 };
 
 unordered_map<string, int> inference_rule_template_arity = {
@@ -164,7 +165,8 @@ unordered_map<string, int> inference_rule_template_arity = {
     {"notR", 1},
     {"Id", 1},
     {"KL", 1},
-    {"KR", 1}
+    {"KR", 1},
+    {"cut", 1}
 };
 
 enum SentenceType {
@@ -266,6 +268,24 @@ vector<Token> tokenize(const string& code){
 
     size_t pos = 0;
     for (size_t i = 0; i <= code.size(); i++) {
+        // `//` starts a line comment. Flush the token before it, then skip
+        // everything through the newline (or through EOF).
+        if (i + 1 < code.size() && code[i] == '/' && code[i + 1] == '/') {
+            add_token(pos, i);
+            size_t comment_end = i + 2;
+            while (comment_end < code.size() && code[comment_end] != '\n') {
+                ++comment_end;
+            }
+            if (comment_end < code.size()) {
+                pos = comment_end + 1;
+                i = comment_end;
+            } else {
+                pos = code.size();
+                i = code.size();
+            }
+            continue;
+        }
+
         // 2文字トークンを優先して切り出す
         if (i + 1 < code.size()) {
             if (code[i] == '|' && code[i + 1] == '-') {
@@ -1280,6 +1300,41 @@ Sequent apply_inference_rule(
             antecedent.erase(operand);
             succedent.insert(make_unary_prop("not", operand, *rule_node));
             return Sequent(antecedent, succedent);
+        }
+
+    } else if (rule == "cut") {
+        // Γ, A ⊢ Δ   and   Γ ⊢ A, Δ   gives   Γ ⊢ Δ
+        const Prop& cut_prop = template_args[0];
+        if (!premises[0].succedent.contains(cut_prop)) {
+            throw_validation_error(
+                *rule_node,
+                "cut requires the first premise succedent to contain '" +
+                    cut_prop.to_string() + "'."
+            );
+        } else if (!premises[1].antecedent.contains(cut_prop)) {
+            throw_validation_error(
+                *rule_node,
+                "cut requires the second premise antecedent to contain '" +
+                    cut_prop.to_string() + "'."
+            );
+        } else {
+            auto first_succedent_rest = premises[0].succedent;
+            auto second_antecedent_rest = premises[1].antecedent;
+            first_succedent_rest.erase(cut_prop);
+            second_antecedent_rest.erase(cut_prop);
+            if (premises[0].antecedent != second_antecedent_rest) {
+                throw_validation_error(
+                    *rule_node,
+                    "cut requires the first antecedent to match the second antecedent after removing the cut proposition."
+                );
+            } else if (first_succedent_rest != premises[1].succedent) {
+                throw_validation_error(
+                    *rule_node,
+                    "cut requires the second succedent to match the first succedent after removing the cut proposition."
+                );
+            } else {
+                return Sequent(premises[0].antecedent, premises[1].succedent);
+            }
         }
     } else {
         throw_validation_error(

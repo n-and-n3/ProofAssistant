@@ -1,0 +1,18 @@
+Type A;
+Type B;
+Type C;
+
+[A,A->B |- B] s1 = impL<A,B>(KR<B>(Id<A>()), KL<A>(Id<B>()));
+[B,B->C |- C] s2 = impL<B,C>(KR<C>(Id<B>()), KL<B>(Id<C>()));
+
+[A, A->B, B->C |- B,C] s1_ = KL<B->C>(KR<C>(s1));
+[A, A->B, B->C, B |- C] s2_ = KL<A->B>(KL<A>(s2));
+
+[A, A->B, B->C |- C] s3 = cut<B>(s1_, s2_);
+
+// コメントアウト
+print s1_;
+print s2_;
+print s3;
+
+
