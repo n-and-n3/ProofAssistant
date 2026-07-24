@@ -8,11 +8,44 @@
 ビルド:
 
 - `g++ main.cpp -o main`
+- `g++ -std=c++20 main3.cpp -o main3`
 
 実行（proofファイルを1つ渡す）:
 
 - `./main ./proofs/De_Morgan.n3`
 - `./main ./proofs/impimp.n3`
+
+### LaTeX 証明図
+
+`main3` に `--latex` を指定すると、ソース中の各 `print` 文が参照する
+証明を `bussproofs` の証明図として標準出力へ出力します。
+
+```sh
+./main3 --latex demos/02_modus_ponens.n3 -o modus_ponens.tex
+pdflatex modus_ponens.tex
+```
+
+`-o`を省略した場合は、従来どおり標準出力へLaTeXコードを出力します。
+
+```sh
+./main3 --latex demos/02_modus_ponens.n3
+```
+
+出力は次のパッケージを使用する、単独でコンパイル可能な LaTeX 文書です。
+
+```latex
+\usepackage{amsmath}
+\usepackage{bussproofs}
+\usepackage{adjustbox}
+\usepackage[a4paper,landscape,margin=1cm]{geometry}
+```
+
+幅の広い証明図はページ幅を超えない範囲まで自動的に縮小されます。
+複数の`print`がある場合は、証明図ごとに改ページします。
+
+通常実行と同じ型検査・証明検証を先に行うため、不正な証明から証明図は
+生成されません。`print` が複数あれば、1つの文書内に複数の証明図を
+生成します。
 
 Pythonで証明を自動生成:
 
