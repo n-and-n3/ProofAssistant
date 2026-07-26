@@ -11,7 +11,26 @@ from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
 
-DEFAULT_SEQUENT = "|- A->A"
+DEFAULT_SEQUENT = """|- (P12*P13*P23) + (~P12*~P13*~P23)
++ (P12*P14*P24) + (~P12*~P14*~P24)
++ (P12*P15*P25) + (~P12*~P15*~P25)
++ (P12*P16*P26) + (~P12*~P16*~P26)
++ (P13*P14*P34) + (~P13*~P14*~P34)
++ (P13*P15*P35) + (~P13*~P15*~P35)
++ (P13*P16*P36) + (~P13*~P16*~P36)
++ (P14*P15*P45) + (~P14*~P15*~P45)
++ (P14*P16*P46) + (~P14*~P16*~P46)
++ (P15*P16*P56) + (~P15*~P16*~P56)
++ (P23*P24*P34) + (~P23*~P24*~P34)
++ (P23*P25*P35) + (~P23*~P25*~P35)
++ (P23*P26*P36) + (~P23*~P26*~P36)
++ (P24*P25*P45) + (~P24*~P25*~P45)
++ (P24*P26*P46) + (~P24*~P26*~P46)
++ (P25*P26*P56) + (~P25*~P26*~P56)
++ (P34*P35*P45) + (~P34*~P35*~P45)
++ (P34*P36*P46) + (~P34*~P36*~P46)
++ (P35*P36*P56) + (~P35*~P36*~P56)
++ (P45*P46*P56) + (~P45*~P46*~P56)"""
 RESERVED_IDENTIFIERS = frozenset({"Type", "auto", "print"})
 IDENTIFIER_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 
@@ -520,6 +539,26 @@ def apply_rule(
             premise.ant - {operand},
             premise.suc | {Prop.unary("not", operand)},
         )
+
+    if rule == "cut":
+        (cut_prop,) = templates
+        first, second = sequents
+        _require(
+            cut_prop in first.suc,
+            "cut の第1前提の右辺にカット式がありません",
+        )
+        _require(
+            cut_prop in second.ant,
+            "cut の第2前提の左辺にカット式がありません",
+        )
+        first_succedent = first.suc - {cut_prop}
+        second_antecedent = second.ant - {cut_prop}
+        _require(
+            first.ant == second_antecedent
+            and first_succedent == second.suc,
+            "cut の文脈が一致しません",
+        )
+        return Sequent(first.ant, first_succedent)
 
     raise ProofConstructionError(f"未知の推論規則です: {rule}")
 

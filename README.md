@@ -163,3 +163,37 @@ Pythonの標準出力は、そのまま保存して実行できる `.n3` だけ�
 	などは壊れやすいです。
 	- 回避策: 先に `[ ... ] name = ...;` や `auto name = ...;` で中間シークエントに名前を付けてから、引数は **変数名だけ**を渡してください。
 - エラーは基本的に `runtime_error` で落ちます（`expected '|-'` / `unknown token` / 推論前提不成立など）
+# VS Code / LSP
+
+The repository includes a minimal full-document-sync language server and a
+dependency-free VS Code client extension. It provides:
+
+- diagnostics while editing;
+- hover information for tokens and errors;
+- same-identifier document highlights;
+- semantic highlighting for keywords, inference rules, identifiers and
+  operators.
+
+Build the analyzer and extension assets:
+
+```bash
+make lsp
+```
+
+Install the extension into the current local or remote VS Code environment:
+
+```bash
+make extension-install
+```
+
+Then reload the VS Code window and open a `.n3` file. The server analyzes the
+editor's in-memory text using full synchronization; saving the file is not
+required. Set `VSCODE_EXTENSIONS_DIR` when a nonstandard extension directory
+is needed.
+
+The server can also be started independently:
+
+```bash
+PROOFASSISTANT_ANALYZER="$PWD/vscode-extension/bin/proofassistant" \
+python3 lsp/server.py
+```

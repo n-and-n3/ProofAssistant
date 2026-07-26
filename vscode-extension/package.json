@@ -1,0 +1,56 @@
+{
+  "name": "proofassistant-language-support",
+  "displayName": "ProofAssistant Language Support",
+  "description": "Diagnostics, hover, highlights and semantic highlighting for .n3 proof files.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "activationEvents": [
+    "onLanguage:proofassistant"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "proofassistant",
+        "aliases": [
+          "ProofAssistant",
+          "n3"
+        ],
+        "extensions": [
+          ".n3"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "proofassistant",
+        "scopes": {
+          "keyword": [
+            "keyword.control.proofassistant"
+          ],
+          "function": [
+            "entity.name.function.proofassistant"
+          ],
+          "variable": [
+            "variable.other.proofassistant"
+          ],
+          "operator": [
+            "keyword.operator.proofassistant"
+          ]
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "check": "node --check extension.js"
+  },
+  "license": "MIT"
+}

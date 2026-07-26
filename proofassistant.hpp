@@ -64,9 +64,20 @@ struct AnalysisResult {
     bool success = false;
     std::vector<Diagnostic> diagnostics;
     std::vector<TokenInfo> tokens;
-    std::string program_output;
 };
 
+struct ExecutionOptions {
+    bool generate_latex = false;
+};
+
+struct ExecutionResult {
+    bool success = false;
+    std::vector<Diagnostic> diagnostics;
+    std::string print_output;
+    std::string latex;
+};
+
+// Kept as a compatibility view for callers that only request LaTeX.
 struct LatexResult {
     bool success = false;
     std::vector<Diagnostic> diagnostics;
@@ -74,6 +85,10 @@ struct LatexResult {
 };
 
 AnalysisResult analyze(std::string_view source);
+ExecutionResult execute(
+    std::string_view source,
+    ExecutionOptions options = {}
+);
 LatexResult render_latex(std::string_view source);
 
 // Thin CLI helper. Keeping file I/O out of `analyze` lets an LSP analyze the

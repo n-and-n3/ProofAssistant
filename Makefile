@@ -12,3 +12,11 @@ run: $(TARGET)
 
 clean:
 	rm -f $(TARGET) $(TARGET).exe
+
+.PHONY: lsp extension-install
+
+lsp:
+	./scripts/build_lsp.sh
+
+extension-install:
+	./scripts/install_vscode_extension.sh

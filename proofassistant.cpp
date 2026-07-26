@@ -1,7 +1,6 @@
 #include "proofassistant.hpp"
 
 #include <fstream>
-#include <mutex>
 #include <sstream>
 
 // main2.cpp is currently the legacy implementation unit. Defining this macro
@@ -15,26 +14,15 @@
 namespace proofassistant {
 namespace {
 
-std::mutex compiler_mutex;
-
 Range to_public_range(const SourceSpan& span) {
-    if (!span.document) {
-        throw std::runtime_error(
-            "A source span has no associated source document."
-        );
-    }
-    const LineColumn start =
-        span.document->offset_to_line_column(span.start_offset);
-    const LineColumn end =
-        span.document->offset_to_line_column(span.end_offset);
     return Range{
         Position{
-            static_cast<std::uint32_t>(start.line),
-            static_cast<std::uint32_t>(start.column)
+            static_cast<std::uint32_t>(span.start_line - 1),
+            static_cast<std::uint32_t>(span.start_column - 1)
         },
         Position{
-            static_cast<std::uint32_t>(end.line),
-            static_cast<std::uint32_t>(end.column)
+            static_cast<std::uint32_t>(span.end_line - 1),
+            static_cast<std::uint32_t>(span.end_column)
         }
     };
 }
@@ -55,38 +43,36 @@ TokenCategory to_public_token_category(::TokenKind kind) {
     }
 }
 
-class ScopedStreamRedirect {
-public:
-    ScopedStreamRedirect(std::ostream& stream, std::streambuf* replacement)
-        : stream_(stream), original_(stream.rdbuf(replacement)) {}
-
-    ScopedStreamRedirect(const ScopedStreamRedirect&) = delete;
-    ScopedStreamRedirect& operator=(const ScopedStreamRedirect&) = delete;
-
-    ~ScopedStreamRedirect() {
-        stream_.rdbuf(original_);
-    }
-
-private:
-    std::ostream& stream_;
-    std::streambuf* original_;
-};
-
-Diagnostic make_diagnostic(const SourceError& error) {
+Diagnostic make_diagnostic(const InternalDiagnostic& internal) {
     Diagnostic diagnostic;
-    diagnostic.message = error.what();
-    if (error.source_span()) {
-        diagnostic.range = to_public_range(*error.source_span());
+    diagnostic.message = internal.message;
+    diagnostic.code = internal.code;
+    if (internal.source_span) {
+        diagnostic.range = to_public_range(*internal.source_span);
     }
 
-    if (error.kind() == SourceErrorKind::Parse) {
+    if (internal.phase == InternalDiagnosticPhase::Parser) {
         diagnostic.phase = DiagnosticPhase::Parse;
-        diagnostic.code = "parse-error";
-    } else if (error.kind() == SourceErrorKind::Validation) {
+    } else if (internal.phase == InternalDiagnosticPhase::Semantic) {
         diagnostic.phase = DiagnosticPhase::Semantic;
-        diagnostic.code = "validation-error";
+    } else if (internal.phase == InternalDiagnosticPhase::Lexer) {
+        diagnostic.phase = DiagnosticPhase::Parse;
     } else {
-        throw std::runtime_error("Unknown source error kind.");
+        throw std::runtime_error("Unknown internal diagnostic phase.");
+    }
+
+    if (internal.severity == InternalDiagnosticSeverity::Error) {
+        diagnostic.severity = DiagnosticSeverity::Error;
+    } else if (internal.severity == InternalDiagnosticSeverity::Warning) {
+        diagnostic.severity = DiagnosticSeverity::Warning;
+    } else if (
+        internal.severity == InternalDiagnosticSeverity::Information
+    ) {
+        diagnostic.severity = DiagnosticSeverity::Information;
+    } else if (internal.severity == InternalDiagnosticSeverity::Hint) {
+        diagnostic.severity = DiagnosticSeverity::Hint;
+    } else {
+        throw std::runtime_error("Unknown internal diagnostic severity.");
     }
     return diagnostic;
 }
@@ -112,12 +98,13 @@ using ProofEnvironment =
 
 std::shared_ptr<ProofTree> build_proof_tree(
     const std::shared_ptr<ASTNode>& node,
-    const ::Context& context,
-    const ProofEnvironment& proofs
+    const ::SymbolTable& context,
+    const ProofEnvironment& proofs,
+    DiagnosticSink& diagnostics
 ) {
     if (!node) {
-        throw std::runtime_error(
-            "Validation error at unknown location: expected a proof node, but found null."
+        throw std::logic_error(
+            "Internal error: expected a proof node, but found null."
         );
     } else if (node->kind == "sequent_identifier") {
         require_child_count(node, 0);
@@ -139,19 +126,20 @@ std::shared_ptr<ProofTree> build_proof_tree(
         std::vector<std::shared_ptr<ProofTree>> premises;
         premises.reserve(premise_list->children.size());
         for (const auto& premise : premise_list->children) {
-            premises.push_back(build_proof_tree(premise, context, proofs));
+            premises.push_back(
+                build_proof_tree(premise, context, proofs, diagnostics)
+            );
         }
 
         return std::make_shared<ProofTree>(ProofTree{
             node->content,
-            evaluate_proof(node, context),
+            evaluate_proof(node, context, diagnostics),
             std::move(premises)
         });
     } else {
-        throw_validation_error(
-            *node,
-            "Expected a proof node with kind 'sequent_identifier' or "
-            "'inference_rules', but found '" + node->kind + "'."
+        throw std::logic_error(
+            "Internal error: expected proof AST kind 'sequent_identifier' "
+            "or 'inference_rules', but found '" + node->kind + "'."
         );
     }
 }
@@ -188,14 +176,13 @@ std::string latex_escape(std::string_view text) {
 
 std::string prop_to_latex(const std::shared_ptr<const ASTNode>& node) {
     if (!node) {
-        throw std::runtime_error(
-            "Validation error at unknown location: proposition AST root is null."
+        throw std::logic_error(
+            "Internal error: proposition AST root is null."
         );
     } else if (node->kind == "prop_identifier") {
         if (!node->children.empty()) {
-            throw_validation_error(
-                *node,
-                "A proposition identifier must not have child nodes."
+            throw std::logic_error(
+                "Internal error: a proposition identifier has child nodes."
             );
         } else {
             return R"(\mathit{)" + latex_escape(node->content) + "}";
@@ -224,9 +211,8 @@ std::string prop_to_latex(const std::shared_ptr<const ASTNode>& node) {
             } else if (node->content == "imp") {
                 operation = R"(\to)";
             } else {
-                throw_validation_error(
-                    *node,
-                    "Unknown binary logical operation '" +
+                throw std::logic_error(
+                    "Internal error: unknown binary logical operation '" +
                         node->content + "'."
                 );
             }
@@ -234,15 +220,14 @@ std::string prop_to_latex(const std::shared_ptr<const ASTNode>& node) {
                 " " + operation + " " +
                 prop_to_latex(node->children[1]) + R"(\right))";
         } else {
-            throw_validation_error(
-                *node,
-                "Unknown logical operation '" + node->content + "'."
+            throw std::logic_error(
+                "Internal error: unknown logical operation '" +
+                    node->content + "'."
             );
         }
     } else {
-        throw_validation_error(
-            *node,
-            "Cannot render AST kind '" + node->kind +
+        throw std::logic_error(
+            "Internal error: cannot render AST kind '" + node->kind +
                 "' as a proposition."
         );
     }
@@ -363,18 +348,9 @@ std::string make_latex_document(
 } // namespace
 
 AnalysisResult analyze(std::string_view source) {
-    // The legacy evaluator writes `print` statements to std::cout. Serialize
-    // access while adapting that behavior into a returned string. Once output
-    // is passed explicitly through the evaluator, this lock can be removed.
-    std::lock_guard lock(compiler_mutex);
-    std::ostringstream captured_output;
-    ScopedStreamRedirect redirect(std::cout, captured_output.rdbuf());
-
     AnalysisResult result;
     try {
-        const auto document =
-            std::make_shared<const ::SourceDocument>(std::string(source));
-        const auto internal_tokens = ::tokenize(document);
+        const auto internal_tokens = ::tokenize(std::string(source));
         result.tokens.reserve(internal_tokens.size());
         for (const auto& token : internal_tokens) {
             result.tokens.push_back(TokenInfo{
@@ -383,22 +359,147 @@ AnalysisResult analyze(std::string_view source) {
                 to_public_range(token.source_span)
             });
         }
-        result.success = (::compile(std::string(source)) == 0);
-        result.program_output = captured_output.str();
-        return result;
-    } catch (const SourceError& error) {
-        result.success = false;
-        result.program_output = captured_output.str();
-        result.diagnostics.push_back(make_diagnostic(error));
+        DiagnosticSink diagnostics;
+        const auto root = ::parser(internal_tokens, diagnostics);
+        ::SymbolTable context;
+        ::evaluate(root, context, diagnostics);
+        for (const auto& diagnostic : diagnostics.diagnostics()) {
+            result.diagnostics.push_back(make_diagnostic(diagnostic));
+        }
+        result.success = !diagnostics.has_errors();
         return result;
     } catch (const std::exception& error) {
         result.success = false;
-        result.program_output = captured_output.str();
         result.diagnostics.push_back(make_internal_diagnostic(error));
         return result;
     } catch (...) {
         result.success = false;
-        result.program_output = captured_output.str();
+        result.diagnostics.push_back(Diagnostic{
+            DiagnosticSeverity::Error,
+            DiagnosticPhase::Internal,
+            "unknown-exception",
+            "An unknown non-standard exception occurred.",
+            std::nullopt
+        });
+        return result;
+    }
+}
+
+ExecutionResult execute(
+    std::string_view source,
+    ExecutionOptions options
+) {
+    ExecutionResult result;
+    try {
+        const auto tokens = ::tokenize(std::string(source));
+        DiagnosticSink diagnostics;
+        const auto root = ::parser(tokens, diagnostics);
+        require_node_kind(root, "code");
+
+        ::SymbolTable context;
+        ProofEnvironment proofs;
+        std::vector<std::pair<std::string, std::shared_ptr<ProofTree>>>
+            printed_proofs;
+
+        for (const auto& statement : root->children) {
+            const std::size_t diagnostic_count_before =
+                diagnostics.size();
+            require_node_kind(statement, "prefix");
+            if (statement->content == "Type") {
+                evaluate_statement(statement, context, diagnostics);
+            } else if (statement->content == "auto") {
+                require_child_count(statement, 2);
+                const auto& identifier = statement->children[0];
+                require_node_kind(identifier, "sequent_identifier");
+                evaluate_statement(statement, context, diagnostics);
+                if (
+                    options.generate_latex &&
+                    diagnostics.size() == diagnostic_count_before
+                ) {
+                    auto proof = build_proof_tree(
+                        statement->children[1],
+                        context,
+                        proofs,
+                        diagnostics
+                    );
+                    proofs.emplace(identifier->content, std::move(proof));
+                }
+            } else if (statement->content == "var") {
+                require_child_count(statement, 3);
+                const auto& identifier = statement->children[1];
+                require_node_kind(identifier, "sequent_identifier");
+                evaluate_statement(statement, context, diagnostics);
+                if (
+                    options.generate_latex &&
+                    diagnostics.size() == diagnostic_count_before
+                ) {
+                    auto proof = build_proof_tree(
+                        statement->children[2],
+                        context,
+                        proofs,
+                        diagnostics
+                    );
+                    proofs.emplace(identifier->content, std::move(proof));
+                }
+            } else if (statement->content == "print") {
+                require_child_count(statement, 1);
+                const auto& identifier = statement->children[0];
+                require_node_kind(identifier, "sequent_identifier");
+                evaluate_statement(statement, context, diagnostics);
+                if (diagnostics.size() == diagnostic_count_before) {
+                    const Sequent* value =
+                        context.find_sequent(identifier->content);
+                    if (!value) {
+                        throw std::logic_error(
+                            "Internal error: validated print target is "
+                            "missing from the symbol table."
+                        );
+                    }
+                    result.print_output +=
+                        "Proved : " + value->to_string() + "\n";
+
+                    if (options.generate_latex) {
+                        auto proof = proofs.find(identifier->content);
+                        if (proof == proofs.end()) {
+                            throw std::logic_error(
+                                "Internal error: a validated sequent has "
+                                "no recorded proof tree."
+                            );
+                        }
+                        printed_proofs.emplace_back(
+                            identifier->content,
+                            proof->second
+                        );
+                    }
+                }
+            } else {
+                throw std::logic_error(
+                    "Internal error: unknown statement type '" +
+                        statement->content + "'."
+                );
+            }
+        }
+
+        for (const auto& diagnostic : diagnostics.diagnostics()) {
+            result.diagnostics.push_back(make_diagnostic(diagnostic));
+        }
+        result.success = !diagnostics.has_errors();
+        if (options.generate_latex && result.success) {
+            result.latex = make_latex_document(printed_proofs);
+        }
+        return result;
+    } catch (const SemanticFailure& failure) {
+        result.success = false;
+        result.diagnostics.push_back(
+            make_diagnostic(failure.diagnostic())
+        );
+        return result;
+    } catch (const std::exception& error) {
+        result.success = false;
+        result.diagnostics.push_back(make_internal_diagnostic(error));
+        return result;
+    } catch (...) {
+        result.success = false;
         result.diagnostics.push_back(Diagnostic{
             DiagnosticSeverity::Error,
             DiagnosticPhase::Internal,
@@ -411,98 +512,15 @@ AnalysisResult analyze(std::string_view source) {
 }
 
 LatexResult render_latex(std::string_view source) {
-    std::lock_guard lock(compiler_mutex);
-    LatexResult result;
-    try {
-        const auto document =
-            std::make_shared<const ::SourceDocument>(std::string(source));
-        const auto tokens = ::tokenize(document);
-        const auto root = ::parser(tokens);
-        require_node_kind(root, "code");
-
-        ::Context context;
-        ProofEnvironment proofs;
-        std::vector<std::pair<std::string, std::shared_ptr<ProofTree>>>
-            printed_proofs;
-
-        for (const auto& statement : root->children) {
-            require_node_kind(statement, "prefix");
-            if (statement->content == "Type") {
-                evaluate_statement(statement, context);
-            } else if (statement->content == "auto") {
-                require_child_count(statement, 2);
-                const auto& identifier = statement->children[0];
-                require_node_kind(identifier, "sequent_identifier");
-                auto proof = build_proof_tree(
-                    statement->children[1],
-                    context,
-                    proofs
-                );
-                evaluate_statement(statement, context);
-                proofs.emplace(identifier->content, std::move(proof));
-            } else if (statement->content == "var") {
-                require_child_count(statement, 3);
-                const auto& identifier = statement->children[1];
-                require_node_kind(identifier, "sequent_identifier");
-                auto proof = build_proof_tree(
-                    statement->children[2],
-                    context,
-                    proofs
-                );
-                evaluate_statement(statement, context);
-                proofs.emplace(identifier->content, std::move(proof));
-            } else if (statement->content == "print") {
-                require_child_count(statement, 1);
-                const auto& identifier = statement->children[0];
-                require_node_kind(identifier, "sequent_identifier");
-                require_sequent_defined(
-                    context,
-                    identifier->content,
-                    *identifier
-                );
-                auto proof = proofs.find(identifier->content);
-                if (proof == proofs.end()) {
-                    throw_validation_error(
-                        *identifier,
-                        "Sequent variable '" + identifier->content +
-                            "' has no recorded proof tree."
-                    );
-                } else {
-                    printed_proofs.emplace_back(
-                        identifier->content,
-                        proof->second
-                    );
-                }
-            } else {
-                throw_validation_error(
-                    *statement,
-                    "Unknown statement type '" + statement->content + "'."
-                );
-            }
-        }
-
-        result.success = true;
-        result.latex = make_latex_document(printed_proofs);
-        return result;
-    } catch (const SourceError& error) {
-        result.success = false;
-        result.diagnostics.push_back(make_diagnostic(error));
-        return result;
-    } catch (const std::exception& error) {
-        result.success = false;
-        result.diagnostics.push_back(make_internal_diagnostic(error));
-        return result;
-    } catch (...) {
-        result.success = false;
-        result.diagnostics.push_back(Diagnostic{
-            DiagnosticSeverity::Error,
-            DiagnosticPhase::Internal,
-            "unknown-exception",
-            "An unknown non-standard exception occurred.",
-            std::nullopt
-        });
-        return result;
-    }
+    ExecutionResult execution = execute(
+        source,
+        ExecutionOptions{.generate_latex = true}
+    );
+    return LatexResult{
+        .success = execution.success,
+        .diagnostics = move(execution.diagnostics),
+        .latex = move(execution.latex),
+    };
 }
 
 int run_file(
@@ -517,8 +535,8 @@ int run_file(
     } else {
         std::ostringstream buffer;
         buffer << input.rdbuf();
-        AnalysisResult result = analyze(buffer.str());
-        standard_output << result.program_output;
+        ExecutionResult result = execute(buffer.str());
+        standard_output << result.print_output;
 
         if (result.success) {
             standard_output << "0\n";

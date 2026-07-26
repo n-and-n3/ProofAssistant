@@ -210,6 +210,70 @@ struct Token {
     }
 };
 
+enum class InternalDiagnosticSeverity {
+    Error,
+    Warning,
+    Information,
+    Hint,
+};
+
+enum class InternalDiagnosticPhase {
+    Lexer,
+    Parser,
+    Semantic,
+};
+
+struct InternalDiagnostic {
+    InternalDiagnosticSeverity severity =
+        InternalDiagnosticSeverity::Error;
+    InternalDiagnosticPhase phase = InternalDiagnosticPhase::Semantic;
+    string code;
+    string message;
+    optional<SourceSpan> source_span;
+};
+
+class DiagnosticSink {
+public:
+    void report(InternalDiagnostic diagnostic) {
+        diagnostics_.push_back(move(diagnostic));
+    }
+
+    void report_error(
+        InternalDiagnosticPhase phase,
+        string code,
+        string message,
+        optional<SourceSpan> source_span = nullopt
+    ) {
+        report(InternalDiagnostic{
+            .severity = InternalDiagnosticSeverity::Error,
+            .phase = phase,
+            .code = move(code),
+            .message = move(message),
+            .source_span = move(source_span),
+        });
+    }
+
+    bool has_errors() const noexcept {
+        for (const auto& diagnostic : diagnostics_) {
+            if (diagnostic.severity == InternalDiagnosticSeverity::Error) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    size_t size() const noexcept {
+        return diagnostics_.size();
+    }
+
+    const vector<InternalDiagnostic>& diagnostics() const noexcept {
+        return diagnostics_;
+    }
+
+private:
+    vector<InternalDiagnostic> diagnostics_;
+};
+
 bool operator==(string_view lhs, const Token& rhs) {
     return rhs == lhs;
 }
@@ -496,9 +560,32 @@ struct Sequent {
 
 };
 
-struct Context{
-    set<string> env_type;
-    unordered_map<string, Sequent> env_sequent;
+class SymbolTable {
+public:
+    bool contains_type(const string& name) const {
+        return proposition_types_.contains(name);
+    }
+
+    bool contains_sequent(const string& name) const {
+        return sequents_.contains(name);
+    }
+
+    const Sequent* find_sequent(const string& name) const {
+        auto iterator = sequents_.find(name);
+        return iterator == sequents_.end() ? nullptr : &iterator->second;
+    }
+
+    void define_type(string name) {
+        proposition_types_.insert(move(name));
+    }
+
+    void define_sequent(string name, Sequent value) {
+        sequents_.emplace(move(name), move(value));
+    }
+
+private:
+    set<string> proposition_types_;
+    unordered_map<string, Sequent> sequents_;
 };
 
 string format_source_span(const optional<SourceSpan>& source_span) {
@@ -512,14 +599,48 @@ string format_source_span(const optional<SourceSpan>& source_span) {
         to_string(span.end_column);
 }
 
-[[noreturn]] void throw_validation_error(const ASTNode& node, const string& message) {
-    throw runtime_error("Validation error at " + format_source_span(node.source_span) + ": " + message);
+class SemanticFailure final : public exception {
+public:
+    explicit SemanticFailure(InternalDiagnostic diagnostic)
+        : diagnostic_(move(diagnostic)) {}
+
+    const char* what() const noexcept override {
+        return diagnostic_.message.c_str();
+    }
+
+    InternalDiagnostic take_diagnostic() {
+        return move(diagnostic_);
+    }
+
+    const InternalDiagnostic& diagnostic() const noexcept {
+        return diagnostic_;
+    }
+
+private:
+    InternalDiagnostic diagnostic_;
+};
+
+[[noreturn]] void throw_validation_error(
+    const ASTNode& node,
+    const string& message
+) {
+    throw SemanticFailure(InternalDiagnostic{
+        .severity = InternalDiagnosticSeverity::Error,
+        .phase = InternalDiagnosticPhase::Semantic,
+        .code = "semantic-error",
+        .message = message,
+        .source_span = node.source_span,
+    });
 }
 
-[[noreturn]] void throw_parse_error(
+class ParseRecovery final {};
+
+[[noreturn]] void report_parse_error(
     const vector<Token>& tokens,
     int pc,
-    const string& message
+    const string& code,
+    const string& message,
+    DiagnosticSink& diagnostics
 ) {
     optional<SourceSpan> span = nullopt;
     if (pc >= 0 && pc < ssize(tokens)) {
@@ -527,16 +648,29 @@ string format_source_span(const optional<SourceSpan>& source_span) {
     } else if (!tokens.empty()) {
         span = tokens.back().source_span;
     }
-    throw runtime_error("Parse error at " + format_source_span(span) + ": " + message);
+    diagnostics.report_error(
+        InternalDiagnosticPhase::Parser,
+        code,
+        message,
+        span
+    );
+    throw ParseRecovery{};
 }
 
 const Token& require_current_token(
     const vector<Token>& tokens,
     int pc,
-    const string& expected
+    const string& expected,
+    DiagnosticSink& diagnostics
 ) {
     if (pc < 0 || pc >= ssize(tokens)) {
-        throw_parse_error(tokens, pc, "Expected " + expected + ", but reached the end of input.");
+        report_parse_error(
+            tokens,
+            pc,
+            "unexpected-end-of-input",
+            "Expected " + expected + ", but reached the end of input.",
+            diagnostics
+        );
     } else {
         return tokens[pc];
     }
@@ -545,141 +679,210 @@ const Token& require_current_token(
 void require_token_text(
     const vector<Token>& tokens,
     int pc,
-    string_view expected
+    string_view expected,
+    DiagnosticSink& diagnostics
 ) {
     require_current_token(
         tokens,
         pc,
-        "token '" + string(expected) + "'"
+        "token '" + string(expected) + "'",
+        diagnostics
     );
     const Token& actual = tokens[pc];
     if (actual.text != expected) {
-        throw_parse_error(
+        report_parse_error(
             tokens,
             pc,
+            "unexpected-token",
             "Expected token '" + string(expected) + "', but found '" +
-                actual.text + "'."
+                actual.text + "'.",
+            diagnostics
         );
     }
 }
 
 void require_node_kind(const shared_ptr<ASTNode>& node, const string& expected_kind) {
     if (!node) {
-        throw runtime_error("Validation error at unknown location: expected an AST node, but found null.");
+        throw logic_error("Internal error: expected an AST node, but found null.");
     }
     if (node->kind != expected_kind) {
-        throw_validation_error(
-            *node,
-            "Expected AST kind '" + expected_kind + "', but found '" +
-                node->kind + "'."
+        throw logic_error(
+            "Internal error: expected AST kind '" + expected_kind +
+                "', but found '" + node->kind + "'."
         );
     }
 }
 
 void require_child_count(const shared_ptr<ASTNode>& node, size_t expected_count) {
     if (!node) {
-        throw runtime_error("Validation error at unknown location: expected an AST node, but found null.");
+        throw logic_error("Internal error: expected an AST node, but found null.");
     }
     if (node->children.size() != expected_count) {
-        throw_validation_error(
-            *node,
-            "Expected " + to_string(expected_count) +
+        throw logic_error(
+            "Internal error: expected " + to_string(expected_count) +
                 " child node(s), but found " + to_string(node->children.size()) +
                 "."
         );
     }
 }
 
-void require_identifier_available(
-    const Context& context,
+bool require_identifier_available(
+    const SymbolTable& context,
     const string& name,
-    const ASTNode& identifier_node
+    const ASTNode& identifier_node,
+    DiagnosticSink& diagnostics
 ) {
-    if (context.env_type.contains(name) || context.env_sequent.contains(name)) {
-        throw_validation_error(
-            identifier_node,
-            "Identifier '" + name + "' is already defined."
+    if (context.contains_type(name) || context.contains_sequent(name)) {
+        diagnostics.report_error(
+            InternalDiagnosticPhase::Semantic,
+            "duplicate-definition",
+            "Identifier '" + name + "' is already defined.",
+            identifier_node.source_span
         );
+        return false;
     }
+    return true;
 }
 
 void require_type_defined(
-    const Context& context,
+    const SymbolTable& context,
     const string& name,
-    const ASTNode& identifier_node
+    const ASTNode& identifier_node,
+    DiagnosticSink& diagnostics
 ) {
-    if (!context.env_type.contains(name)) {
-        throw_validation_error(
-            identifier_node,
+    if (context.contains_sequent(name)) {
+        diagnostics.report_error(
+            InternalDiagnosticPhase::Semantic,
+            "type-mismatch",
+            "Identifier '" + name +
+                "' is a sequent variable, but a proposition variable was expected.",
+            identifier_node.source_span
+        );
+    } else if (!context.contains_type(name)) {
+        diagnostics.report_error(
+            InternalDiagnosticPhase::Semantic,
+            "undefined-proposition",
             "Proposition variable '" + name + "' is not defined. Declare it with 'Type " +
-                name + ";' before using it."
+                name + ";' before using it.",
+            identifier_node.source_span
         );
     }
 }
 
 const Sequent& require_sequent_defined(
-    const Context& context,
+    const SymbolTable& context,
     const string& name,
-    const ASTNode& identifier_node
+    const ASTNode& identifier_node,
+    DiagnosticSink& diagnostics
 ) {
-    auto it = context.env_sequent.find(name);
-    if (it == context.env_sequent.end()) {
-        throw_validation_error(
-            identifier_node,
-            "Sequent variable '" + name + "' is not defined."
-        );
+    const Sequent* value = context.find_sequent(name);
+    if (!value) {
+        if (context.contains_type(name)) {
+            diagnostics.report_error(
+                InternalDiagnosticPhase::Semantic,
+                "type-mismatch",
+                "Identifier '" + name +
+                    "' is a proposition variable, but a sequent variable was expected.",
+                identifier_node.source_span
+            );
+        } else {
+            diagnostics.report_error(
+                InternalDiagnosticPhase::Semantic,
+                "undefined-sequent",
+                "Sequent variable '" + name + "' is not defined.",
+                identifier_node.source_span
+            );
+        }
+        static const Sequent empty_sequent;
+        return empty_sequent;
     }
-    return it->second;
+    return *value;
 }
 
 void declare_type(
-    Context& context,
+    SymbolTable& context,
     const string& name,
-    const ASTNode& identifier_node
+    const ASTNode& identifier_node,
+    DiagnosticSink& diagnostics
 ) {
-    require_identifier_available(context, name, identifier_node);
-    context.env_type.insert(name);
+    if (require_identifier_available(
+        context, name, identifier_node, diagnostics
+    )) {
+        context.define_type(name);
+    }
 }
 
 void declare_sequent(
-    Context& context,
+    SymbolTable& context,
     const string& name,
     const Sequent& value,
-    const ASTNode& identifier_node
+    const ASTNode& identifier_node,
+    DiagnosticSink& diagnostics
 ) {
-    require_identifier_available(context, name, identifier_node);
-    context.env_sequent.emplace(name, value);
+    if (require_identifier_available(
+        context, name, identifier_node, diagnostics
+    )) {
+        context.define_sequent(name, value);
+    }
 }
 
 
 // ========================================================================================
-shared_ptr<ASTNode> parse_prop(const vector<Token> &tokens, int &pc);
-shared_ptr<ASTNode> parse_type_expr(const vector<Token> &tokens, int &pc);
+shared_ptr<ASTNode> parse_prop(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+);
+shared_ptr<ASTNode> parse_type_expr(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+);
 
 
-shared_ptr<ASTNode> parse_type_identifier(const vector<Token> &tokens, int &pc){
-    require_current_token(tokens, pc, "a type identifier");
+shared_ptr<ASTNode> parse_type_identifier(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+){
+    require_current_token(tokens, pc, "a type identifier", diagnostics);
     if (!keywords.contains(tokens[pc]) && !Syntax_Symbols.contains(tokens[pc])){
         auto node = make_shared<ASTNode>("type_identifier", tokens[pc].text, vector<shared_ptr<ASTNode>>{}, tokens[pc].source_span);
         pc += 1;
         return node;
     } else {
-        throw_parse_error(tokens, pc, "Expected a type identifier, but found '" + tokens[pc].text + "'.");
+        report_parse_error(
+            tokens, pc, "expected-type-identifier",
+            "Expected a type identifier, but found '" + tokens[pc].text + "'.",
+            diagnostics
+        );
     }
 }
-shared_ptr<ASTNode> parse_prop_identifier(const vector<Token> &tokens, int &pc){
-    require_current_token(tokens, pc, "a proposition identifier");
+shared_ptr<ASTNode> parse_prop_identifier(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+){
+    require_current_token(tokens, pc, "a proposition identifier", diagnostics);
     if (!keywords.contains(tokens[pc]) && !Syntax_Symbols.contains(tokens[pc])){
         auto node = make_shared<ASTNode>("prop_identifier", tokens[pc].text, vector<shared_ptr<ASTNode>>{}, tokens[pc].source_span);
         pc += 1;
         return node;
     } else {
-        throw_parse_error(tokens, pc, "Expected a proposition identifier, but found '" + tokens[pc].text + "'.");
+        report_parse_error(
+            tokens, pc, "expected-proposition-identifier",
+            "Expected a proposition identifier, but found '" + tokens[pc].text + "'.",
+            diagnostics
+        );
     }
 }
 
-shared_ptr<ASTNode> parse_sequent_identifier(const vector<Token> &tokens, int &pc){
-    require_current_token(tokens, pc, "a sequent identifier");
+shared_ptr<ASTNode> parse_sequent_identifier(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+){
+    require_current_token(tokens, pc, "a sequent identifier", diagnostics);
     if (!keywords.contains(tokens[pc]) && !Syntax_Symbols.contains(tokens[pc])){
         auto node = make_shared<ASTNode>(
             "sequent_identifier",
@@ -690,39 +893,49 @@ shared_ptr<ASTNode> parse_sequent_identifier(const vector<Token> &tokens, int &p
         pc += 1;
         return node;
     } else {
-        throw_parse_error(tokens, pc, "Expected a sequent identifier, but found '" + tokens[pc].text + "'.");
+        report_parse_error(
+            tokens, pc, "expected-sequent-identifier",
+            "Expected a sequent identifier, but found '" + tokens[pc].text + "'.",
+            diagnostics
+        );
     }
 }
 
-shared_ptr<ASTNode> parse_expression(const vector<Token> &tokens, int &pc){
+shared_ptr<ASTNode> parse_expression(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+){
     // 関数式を解析する
-    require_current_token(tokens, pc, "an inference rule or sequent identifier");
+    require_current_token(
+        tokens, pc, "an inference rule or sequent identifier", diagnostics
+    );
     // 関数一覧の要素 <型, 型, ...>(命題, 命題, ...)
     if (inference_rules.contains(tokens[pc])){
         SourceSpan rule_span = tokens[pc].source_span;
         string rule_name = tokens[pc];
         pc += 1;
-        require_token_text(tokens, pc, "<");
+        require_token_text(tokens, pc, "<", diagnostics);
         pc += 1;
         vector<shared_ptr<ASTNode>> type_args;
         rep(_, inference_rule_template_arity[rule_name]){
-            type_args.push_back(parse_type_expr(tokens, pc));
+            type_args.push_back(parse_type_expr(tokens, pc, diagnostics));
             if (pc < ssize(tokens) && tokens[pc] == ","){
                 pc += 1; // skip ','
             }
         }
-        require_token_text(tokens, pc, ">");
+        require_token_text(tokens, pc, ">", diagnostics);
         pc += 1; // skip '>'
-        require_token_text(tokens, pc, "(");
+        require_token_text(tokens, pc, "(", diagnostics);
         pc += 1; // skip '('
         vector<shared_ptr<ASTNode>> prop_args;
         rep(_, inference_rule_arity[rule_name]){
-            prop_args.push_back(parse_expression(tokens, pc));
+            prop_args.push_back(parse_expression(tokens, pc, diagnostics));
             if (pc < ssize(tokens) && tokens[pc] == ","){
                 pc += 1; // skip ','
             }
         }
-        require_token_text(tokens, pc, ")");
+        require_token_text(tokens, pc, ")", diagnostics);
         pc += 1; // skip ')'
         auto node = make_shared<ASTNode>(
             "inference_rules",
@@ -738,183 +951,254 @@ shared_ptr<ASTNode> parse_expression(const vector<Token> &tokens, int &pc){
 
     // identifier の場合
     if (!keywords.contains(tokens[pc]) && !Syntax_Symbols.contains(tokens[pc])){
-        auto tmp = parse_sequent_identifier(tokens, pc);
+        auto tmp = parse_sequent_identifier(tokens, pc, diagnostics);
         return tmp;
     }
 
-    throw_parse_error(
+    report_parse_error(
         tokens,
         pc,
+        "expected-proof-expression",
         "Expected an inference rule or sequent identifier, but found '" +
-            tokens[pc].text + "'."
+            tokens[pc].text + "'.",
+        diagnostics
     );
 }
 
 
-shared_ptr<ASTNode> parse_factor(const vector<Token> &tokens, int &pc){
+shared_ptr<ASTNode> parse_factor(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+){
     // parse_factor
-    require_current_token(tokens, pc, "a proposition");
+    require_current_token(tokens, pc, "a proposition", diagnostics);
     if (tokens[pc] == "("){
         pc += 1;
-        auto tmp = parse_prop(tokens, pc);
-        require_token_text(tokens, pc, ")");
+        auto tmp = parse_prop(tokens, pc, diagnostics);
+        require_token_text(tokens, pc, ")", diagnostics);
         pc += 1;
         return tmp;
     } else {
-        return parse_prop_identifier(tokens, pc);
+        return parse_prop_identifier(tokens, pc, diagnostics);
     }
 }
 
-shared_ptr<ASTNode> parse_not(const vector<Token> &tokens, int &pc){
+shared_ptr<ASTNode> parse_not(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+){
     // ~ parse_factor
-    require_current_token(tokens, pc, "a proposition");
+    require_current_token(tokens, pc, "a proposition", diagnostics);
     if (tokens[pc] == "~"){
         SourceSpan not_span = tokens[pc].source_span;
         pc += 1;
-        auto tmp = parse_not(tokens, pc);
+        auto tmp = parse_not(tokens, pc, diagnostics);
         return make_shared<ASTNode>("logical", "not", vector<shared_ptr<ASTNode>>{tmp}, not_span);
     } else {
-        auto tmp = parse_factor(tokens, pc);
+        auto tmp = parse_factor(tokens, pc, diagnostics);
         return tmp;
     }
 }
 
 
-shared_ptr<ASTNode> parse_and(const vector<Token> &tokens, int &pc){
+shared_ptr<ASTNode> parse_and(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+){
     // parse_not * parse_and
-    require_current_token(tokens, pc, "a proposition");
-    auto left = parse_not(tokens, pc);
+    require_current_token(tokens, pc, "a proposition", diagnostics);
+    auto left = parse_not(tokens, pc, diagnostics);
     while (pc < ssize(tokens) && tokens[pc] == "*"){
         pc += 1;
-        auto right = parse_not(tokens, pc);
+        auto right = parse_not(tokens, pc, diagnostics);
         left = make_shared<ASTNode>("logical", "and", vector<shared_ptr<ASTNode>>{left, right});
     }
     return left;
 }
 
 
-shared_ptr<ASTNode> parse_or(const vector<Token> &tokens, int &pc){
+shared_ptr<ASTNode> parse_or(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+){
     // parse_or + parse_and
-    require_current_token(tokens, pc, "a proposition");
-    auto left = parse_and(tokens, pc);
+    require_current_token(tokens, pc, "a proposition", diagnostics);
+    auto left = parse_and(tokens, pc, diagnostics);
     while (pc < ssize(tokens) && tokens[pc] == "+"){
         pc += 1;
-        auto right = parse_and(tokens, pc);
+        auto right = parse_and(tokens, pc, diagnostics);
         left = make_shared<ASTNode>("logical", "or", vector<shared_ptr<ASTNode>>{left, right});
     }
     return left;
 }
 
 
-shared_ptr<ASTNode> parse_imp(const vector<Token> &tokens, int &pc){
+shared_ptr<ASTNode> parse_imp(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+){
     // parse_or -> parse_imp
-    require_current_token(tokens, pc, "a proposition");
-    auto left = parse_or(tokens, pc);
+    require_current_token(tokens, pc, "a proposition", diagnostics);
+    auto left = parse_or(tokens, pc, diagnostics);
     if (pc < ssize(tokens) && tokens[pc] == "->"){
         pc += 1;
-        auto right = parse_imp(tokens, pc);
+        auto right = parse_imp(tokens, pc, diagnostics);
         return make_shared<ASTNode>("logical", "imp", vector<shared_ptr<ASTNode>>{left, right});
     }
     return left;
 }
 
-shared_ptr<ASTNode> parse_prop(const vector<Token> &tokens, int &pc){
+shared_ptr<ASTNode> parse_prop(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+){
     // parse_imp
-    require_current_token(tokens, pc, "a proposition");
-    return parse_imp(tokens, pc);
+    require_current_token(tokens, pc, "a proposition", diagnostics);
+    return parse_imp(tokens, pc, diagnostics);
 }
 
-shared_ptr<ASTNode> parse_type_expr(const vector<Token> &tokens, int &pc){
+shared_ptr<ASTNode> parse_type_expr(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+){
     // type template argument is parsed with the same grammar as propositions
-    return parse_prop(tokens, pc);
+    return parse_prop(tokens, pc, diagnostics);
 }
 
 
-shared_ptr<ASTNode> parse_propargs(const vector<Token> &tokens, int &pc){
+shared_ptr<ASTNode> parse_propargs(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+){
     // prop, prop, ...
-    require_current_token(tokens, pc, "a proposition list or its terminator");
+    require_current_token(
+        tokens, pc, "a proposition list or its terminator", diagnostics
+    );
     auto main = make_shared<ASTNode>("propargs", "");
     if (pc >= ssize(tokens) || tokens[pc] == "|-" || tokens[pc] == "]" || tokens[pc] == ")" || tokens[pc] == ";"){
         return main;
     }
-    main->children.push_back(parse_prop(tokens, pc));
+    main->children.push_back(parse_prop(tokens, pc, diagnostics));
     while (pc < ssize(tokens) && tokens[pc] == ","){
         pc += 1;
-        main->children.push_back(parse_prop(tokens, pc));
+        main->children.push_back(parse_prop(tokens, pc, diagnostics));
     }
     return main;
 
 }
 
-shared_ptr<ASTNode> parse_sequent(const vector<Token> &tokens, int &pc){
+shared_ptr<ASTNode> parse_sequent(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+){
     // propargs |- propargs
-    require_current_token(tokens, pc, "a sequent");
-    auto tmp1 = parse_propargs(tokens, pc);
-    require_token_text(tokens, pc, "|-");
+    require_current_token(tokens, pc, "a sequent", diagnostics);
+    auto tmp1 = parse_propargs(tokens, pc, diagnostics);
+    require_token_text(tokens, pc, "|-", diagnostics);
     pc += 1;
-    auto tmp2 = parse_propargs(tokens, pc);
+    auto tmp2 = parse_propargs(tokens, pc, diagnostics);
     auto node = make_shared<ASTNode>("sequent", "", vector<shared_ptr<ASTNode>>{tmp1, tmp2});
     return node;
 }
 
-shared_ptr<ASTNode> parse_code(const vector<Token> &tokens, int &pc){
+shared_ptr<ASTNode> parse_code(
+    const vector<Token>& tokens,
+    int& pc,
+    DiagnosticSink& diagnostics
+){
     auto main = make_shared<ASTNode>("code", "");
     while (pc < ssize(tokens)){
-        SourceSpan key_span = tokens[pc].source_span;
-        string key = tokens[pc];
-        if (key == ";"){
-            while (pc < ssize(tokens) && tokens[pc] == ";"){
-                pc += 1;
-            }
-        } else {
+        const int statement_start = pc;
+        try {
+            SourceSpan key_span = tokens[pc].source_span;
+            string key = tokens[pc];
+            if (key == ";"){
+                while (pc < ssize(tokens) && tokens[pc] == ";"){
+                    pc += 1;
+                }
+            } else {
             if (key == "print"){
                 // print identifier;
                 pc += 1;
-                auto tmp = parse_sequent_identifier(tokens, pc);
+                auto tmp = parse_sequent_identifier(tokens, pc, diagnostics);
                 auto state = make_shared<ASTNode>("prefix", "print", vector<shared_ptr<ASTNode>>{tmp}, key_span);
                 main->children.push_back(state);
-                require_token_text(tokens, pc, ";");
+                require_token_text(tokens, pc, ";", diagnostics);
                 pc += 1;
             } else if (key == "Type"){
                 // Type identifier;
                 pc += 1;
-                auto tmp = parse_type_identifier(tokens, pc);
+                auto tmp = parse_type_identifier(tokens, pc, diagnostics);
                 auto state = make_shared<ASTNode>("prefix", "Type", vector<shared_ptr<ASTNode>>{tmp}, key_span);
                 main->children.push_back(state);
-                require_token_text(tokens, pc, ";");
+                require_token_text(tokens, pc, ";", diagnostics);
                 pc += 1;
             } else if (key == "auto"){
                 // auto identifier = expression;
                 pc += 1;
-                auto tmp1 = parse_sequent_identifier(tokens, pc);
-                require_token_text(tokens, pc, "=");
+                auto tmp1 = parse_sequent_identifier(tokens, pc, diagnostics);
+                require_token_text(tokens, pc, "=", diagnostics);
                 pc += 1;
-                auto tmp2 = parse_expression(tokens, pc);
+                auto tmp2 = parse_expression(tokens, pc, diagnostics);
                 auto state = make_shared<ASTNode>("prefix", "auto", vector<shared_ptr<ASTNode>>{tmp1, tmp2}, key_span);
                 main->children.push_back(state);
-                require_token_text(tokens, pc, ";");
+                require_token_text(tokens, pc, ";", diagnostics);
                 pc += 1;
             } else if (key == "["){
                 // [sequent] identifier = expression;
                 pc += 1;
-                auto tmp1 = parse_sequent(tokens, pc);
-                require_token_text(tokens, pc, "]");
+                auto tmp1 = parse_sequent(tokens, pc, diagnostics);
+                require_token_text(tokens, pc, "]", diagnostics);
                 pc += 1;
-                auto tmp2 = parse_sequent_identifier(tokens, pc);
-                require_token_text(tokens, pc, "=");
+                auto tmp2 = parse_sequent_identifier(tokens, pc, diagnostics);
+                require_token_text(tokens, pc, "=", diagnostics);
                 pc += 1;
-                auto tmp3 = parse_expression(tokens, pc);
+                auto tmp3 = parse_expression(tokens, pc, diagnostics);
                 auto state = make_shared<ASTNode>("prefix", "var", vector<shared_ptr<ASTNode>>{tmp1, tmp2, tmp3}, key_span);
                 main->children.push_back(state);
-                require_token_text(tokens, pc, ";");
+                require_token_text(tokens, pc, ";", diagnostics);
                 pc += 1;
             } else {
-                throw_parse_error(
+                report_parse_error(
                     tokens,
                     pc,
+                    "expected-statement",
                     "Expected a statement beginning with 'Type', 'auto', 'print', or '[', but found '" +
-                        tokens[pc].text + "'."
+                        tokens[pc].text + "'.",
+                    diagnostics
                 );
+            }
+            }
+        } catch (const ParseRecovery&) {
+            if (pc <= statement_start) {
+                pc = statement_start + 1;
+            }
+            while (pc < ssize(tokens)) {
+                if (tokens[pc] == ";") {
+                    ++pc;
+                    break;
+                }
+                if (
+                    pc > statement_start &&
+                    (
+                        tokens[pc] == "Type" ||
+                        tokens[pc] == "auto" ||
+                        tokens[pc] == "print" ||
+                        tokens[pc] == "["
+                    )
+                ) {
+                    break;
+                }
+                ++pc;
             }
         }
     }
@@ -924,10 +1208,8 @@ shared_ptr<ASTNode> parse_code(const vector<Token> &tokens, int &pc){
     if (pc == ssize(tokens)){
         return main;
     } else {
-        throw_parse_error(
-            tokens,
-            pc,
-            "Parser stopped before consuming the complete input."
+        throw logic_error(
+            "Internal parser error: parsing stopped before end of input."
         );
     }
 
@@ -941,17 +1223,31 @@ void print_ast(const shared_ptr<ASTNode>& node, int depth = 0) {
     }
 }
 
-shared_ptr<ASTNode> parser(const vector<Token>& tokens){
+shared_ptr<ASTNode> parser(
+    const vector<Token>& tokens,
+    DiagnosticSink& diagnostics
+){
     int pc = 0;
-    return parse_code(tokens, pc);
+    return parse_code(tokens, pc, diagnostics);
 }
 
-Prop evaluate_prop(const shared_ptr<ASTNode>& node, const Context& context);
-Sequent evaluate_proof(const shared_ptr<ASTNode>& node, const Context& context);
+Prop evaluate_prop(
+    const shared_ptr<ASTNode>& node,
+    const SymbolTable& context,
+    DiagnosticSink& diagnostics
+);
+Sequent evaluate_proof(
+    const shared_ptr<ASTNode>& node,
+    const SymbolTable& context,
+    DiagnosticSink& diagnostics
+);
 
 shared_ptr<ASTNode> mutable_prop_root(const Prop& prop, const ASTNode& error_node) {
     if (!prop.root) {
-        throw_validation_error(error_node, "An internal proposition has no AST root.");
+        throw logic_error(
+            "Internal error: a proposition value has no AST root near " +
+                format_source_span(error_node.source_span) + "."
+        );
     }
     return const_pointer_cast<ASTNode>(prop.root);
 }
@@ -986,25 +1282,36 @@ Prop make_binary_prop(
     ));
 }
 
-Prop evaluate_prop(const shared_ptr<ASTNode>& node, const Context& context) {
+Prop evaluate_prop(
+    const shared_ptr<ASTNode>& node,
+    const SymbolTable& context,
+    DiagnosticSink& diagnostics
+) {
     if (!node) {
-        throw runtime_error(
-            "Validation error at unknown location: expected a proposition AST node, but found null."
+        throw logic_error(
+            "Internal error: expected a proposition AST node, but found null."
         );
     }
 
     if (node->kind == "prop_identifier") {
         require_child_count(node, 0);
         if (node->content.empty()) {
-            throw_validation_error(*node, "A proposition identifier cannot be empty.");
+            throw logic_error(
+                "Internal error: proposition identifier cannot be empty."
+            );
         } else {
-            require_type_defined(context, node->content, *node);
+            require_type_defined(
+                context,
+                node->content,
+                *node,
+                diagnostics
+            );
             return Prop(node);
         }
     } else if (node->kind == "logical") {
         if (node->content == "not") {
             require_child_count(node, 1);
-            evaluate_prop(node->children[0], context);
+            evaluate_prop(node->children[0], context, diagnostics);
             return Prop(node);
         } else if (
             node->content == "and" ||
@@ -1012,19 +1319,19 @@ Prop evaluate_prop(const shared_ptr<ASTNode>& node, const Context& context) {
             node->content == "imp"
         ) {
             require_child_count(node, 2);
-            evaluate_prop(node->children[0], context);
-            evaluate_prop(node->children[1], context);
+            evaluate_prop(node->children[0], context, diagnostics);
+            evaluate_prop(node->children[1], context, diagnostics);
             return Prop(node);
         } else {
-            throw_validation_error(
-                *node,
-                "Unknown logical operation '" + node->content + "'."
+            throw logic_error(
+                "Internal error: unknown logical operation '" +
+                    node->content + "'."
             );
         }
     } else {
-        throw_validation_error(
-            *node,
-            "Expected a proposition node with kind 'prop_identifier' or 'logical', but found '" +
+        throw logic_error(
+            "Internal error: expected proposition AST kind "
+            "'prop_identifier' or 'logical', but found '" +
                 node->kind + "'."
         );
     }
@@ -1032,21 +1339,28 @@ Prop evaluate_prop(const shared_ptr<ASTNode>& node, const Context& context) {
 
 unordered_set<Prop> evaluate_propargs(
     const shared_ptr<ASTNode>& node,
-    const Context& context
+    const SymbolTable& context,
+    DiagnosticSink& diagnostics
 ) {
     require_node_kind(node, "propargs");
     unordered_set<Prop> result;
     for (const auto& child : node->children) {
-        result.insert(evaluate_prop(child, context));
+        result.insert(evaluate_prop(child, context, diagnostics));
     }
     return result;
 }
 
-Sequent evaluate_sequent(const shared_ptr<ASTNode>& node, const Context& context) {
+Sequent evaluate_sequent(
+    const shared_ptr<ASTNode>& node,
+    const SymbolTable& context,
+    DiagnosticSink& diagnostics
+) {
     require_node_kind(node, "sequent");
     require_child_count(node, 2);
-    auto antecedent = evaluate_propargs(node->children[0], context);
-    auto succedent = evaluate_propargs(node->children[1], context);
+    auto antecedent =
+        evaluate_propargs(node->children[0], context, diagnostics);
+    auto succedent =
+        evaluate_propargs(node->children[1], context, diagnostics);
     return Sequent(antecedent, succedent);
 }
 
@@ -1059,11 +1373,13 @@ Sequent apply_inference_rule(
     const string& rule = rule_node->content;
 
     if (!inference_rule_template_arity.contains(rule)) {
-        throw_validation_error(*rule_node, "Unknown inference rule '" + rule + "'.");
+        throw logic_error(
+            "Internal error: unknown inference rule '" + rule + "'."
+        );
     } else if (!inference_rule_arity.contains(rule)) {
-        throw_validation_error(
-            *rule_node,
-            "Inference rule '" + rule + "' has no registered premise arity."
+        throw logic_error(
+            "Internal error: inference rule '" + rule +
+                "' has no registered premise arity."
         );
     } else if (
         template_args.size() !=
@@ -1338,26 +1654,34 @@ Sequent apply_inference_rule(
             }
         }
     } else {
-        throw_validation_error(
-            *rule_node,
-            "Inference rule '" + rule + "' is registered but has no evaluator implementation."
+        throw logic_error(
+            "Internal error: inference rule '" + rule +
+                "' is registered but has no evaluator implementation."
         );
     }
 }
 
-Sequent evaluate_proof(const shared_ptr<ASTNode>& node, const Context& context) {
+Sequent evaluate_proof(
+    const shared_ptr<ASTNode>& node,
+    const SymbolTable& context,
+    DiagnosticSink& diagnostics
+) {
     if (!node) {
-        throw runtime_error(
-            "Validation error at unknown location: expected a proof AST node, but found null."
+        throw logic_error(
+            "Internal error: expected a proof AST node, but found null."
         );
     }
 
     if (node->kind == "sequent_identifier") {
         require_child_count(node, 0);
         if (node->content.empty()) {
-            throw_validation_error(*node, "A sequent identifier cannot be empty.");
+            throw logic_error(
+                "Internal error: sequent identifier cannot be empty."
+            );
         } else {
-            return require_sequent_defined(context, node->content, *node);
+            return require_sequent_defined(
+                context, node->content, *node, diagnostics
+            );
         }
     } else if (node->kind == "inference_rules") {
         require_child_count(node, 2);
@@ -1369,27 +1693,36 @@ Sequent evaluate_proof(const shared_ptr<ASTNode>& node, const Context& context) 
         vector<Prop> template_args;
         template_args.reserve(type_args_node->children.size());
         for (const auto& child : type_args_node->children) {
-            template_args.push_back(evaluate_prop(child, context));
+            template_args.push_back(
+                evaluate_prop(child, context, diagnostics)
+            );
         }
 
         vector<Sequent> premises;
         premises.reserve(prop_args_node->children.size());
         for (const auto& child : prop_args_node->children) {
-            premises.push_back(evaluate_proof(child, context));
+            premises.push_back(
+                evaluate_proof(child, context, diagnostics)
+            );
         }
 
         return apply_inference_rule(node, template_args, premises);
     } else {
-        throw_validation_error(
-            *node,
-            "Expected a proof node with kind 'sequent_identifier' or 'inference_rules', but found '" +
-                node->kind + "'."
+        throw logic_error(
+            "Internal error: expected proof AST kind 'sequent_identifier' "
+            "or 'inference_rules', but found '" + node->kind + "'."
         );
     }
 }
 
-void evaluate_statement(const shared_ptr<ASTNode>& node, Context& context) {
-    require_node_kind(node, "prefix");
+void evaluate_statement(
+    const shared_ptr<ASTNode>& node,
+    SymbolTable& context,
+    DiagnosticSink& diagnostics
+) {
+    try {
+        const size_t diagnostic_count_before = diagnostics.size();
+        require_node_kind(node, "prefix");
 
     if (node->content == "Type") {
         require_child_count(node, 1);
@@ -1397,9 +1730,13 @@ void evaluate_statement(const shared_ptr<ASTNode>& node, Context& context) {
         require_node_kind(identifier, "type_identifier");
         require_child_count(identifier, 0);
         if (identifier->content.empty()) {
-            throw_validation_error(*identifier, "A type identifier cannot be empty.");
+            throw logic_error(
+                "Internal error: type identifier cannot be empty."
+            );
         } else {
-            declare_type(context, identifier->content, *identifier);
+            declare_type(
+                context, identifier->content, *identifier, diagnostics
+            );
         }
     } else if (node->content == "auto") {
         require_child_count(node, 2);
@@ -1407,11 +1744,21 @@ void evaluate_statement(const shared_ptr<ASTNode>& node, Context& context) {
         require_node_kind(identifier, "sequent_identifier");
         require_child_count(identifier, 0);
         if (identifier->content.empty()) {
-            throw_validation_error(*identifier, "A sequent identifier cannot be empty.");
+            throw logic_error(
+                "Internal error: sequent identifier cannot be empty."
+            );
         } else {
-            require_identifier_available(context, identifier->content, *identifier);
-            Sequent result = evaluate_proof(node->children[1], context);
-            declare_sequent(context, identifier->content, result, *identifier);
+            Sequent result =
+                evaluate_proof(node->children[1], context, diagnostics);
+            if (diagnostics.size() == diagnostic_count_before) {
+                declare_sequent(
+                    context,
+                    identifier->content,
+                    result,
+                    *identifier,
+                    diagnostics
+                );
+            }
         }
     } else if (node->content == "var") {
         require_child_count(node, 3);
@@ -1419,20 +1766,33 @@ void evaluate_statement(const shared_ptr<ASTNode>& node, Context& context) {
         require_node_kind(identifier, "sequent_identifier");
         require_child_count(identifier, 0);
         if (identifier->content.empty()) {
-            throw_validation_error(*identifier, "A sequent identifier cannot be empty.");
+            throw logic_error(
+                "Internal error: sequent identifier cannot be empty."
+            );
         } else {
-            require_identifier_available(context, identifier->content, *identifier);
-            Sequent expected = evaluate_sequent(node->children[0], context);
-            Sequent actual = evaluate_proof(node->children[2], context);
-            if (actual != expected) {
-                throw_validation_error(
-                    *node,
+            Sequent expected =
+                evaluate_sequent(node->children[0], context, diagnostics);
+            Sequent actual =
+                evaluate_proof(node->children[2], context, diagnostics);
+            if (diagnostics.size() != diagnostic_count_before) {
+                return;
+            } else if (actual != expected) {
+                diagnostics.report_error(
+                    InternalDiagnosticPhase::Semantic,
+                    "proof-result-mismatch",
                     "Proof result does not match the declared sequent. Expected '" +
                         expected.to_string() + "', but derived '" +
-                        actual.to_string() + "'."
+                        actual.to_string() + "'.",
+                    node->source_span
                 );
             } else {
-                declare_sequent(context, identifier->content, actual, *identifier);
+                declare_sequent(
+                    context,
+                    identifier->content,
+                    actual,
+                    *identifier,
+                    diagnostics
+                );
             }
         }
     } else if (node->content == "print") {
@@ -1441,42 +1801,57 @@ void evaluate_statement(const shared_ptr<ASTNode>& node, Context& context) {
         require_node_kind(identifier, "sequent_identifier");
         require_child_count(identifier, 0);
         if (identifier->content.empty()) {
-            throw_validation_error(*identifier, "A sequent identifier cannot be empty.");
+            throw logic_error(
+                "Internal error: sequent identifier cannot be empty."
+            );
         } else {
             const Sequent& value = require_sequent_defined(
                 context,
                 identifier->content,
-                *identifier
+                *identifier,
+                diagnostics
             );
-            cout << "Proved : " << value.to_string() << "\n";
+            (void)value;
         }
     } else {
-        throw_validation_error(
-            *node,
-            "Unknown statement type '" + node->content + "'."
+        throw logic_error(
+            "Internal error: unknown statement type '" + node->content + "'."
         );
     }
+    } catch (SemanticFailure& failure) {
+        diagnostics.report(failure.take_diagnostic());
+    }
 }
 
-void evaluate(const shared_ptr<ASTNode>& node, Context& context) {
+void evaluate(
+    const shared_ptr<ASTNode>& node,
+    SymbolTable& context,
+    DiagnosticSink& diagnostics
+) {
     require_node_kind(node, "code");
     for (const auto& statement : node->children) {
-        evaluate_statement(statement, context);
+        evaluate_statement(statement, context, diagnostics);
     }
 }
 
 
-int compile(const string& code) {
+int compile(const string& code, DiagnosticSink& diagnostics) {
     vector<Token> tokens = tokenize(code);
-    auto root = parser(tokens);
-    Context context;
-    evaluate(root, context);
+    auto root = parser(tokens, diagnostics);
+    SymbolTable context;
+    evaluate(root, context, diagnostics);
 
-    return 0;
+    return diagnostics.has_errors() ? 1 : 0;
+}
+
+int compile(const string& code) {
+    DiagnosticSink diagnostics;
+    return compile(code, diagnostics);
 }
 
 
 // ===============================================================================
+#ifndef PROOFASSISTANT_LIBRARY_MODE
 int main(int argc, char* argv[]) {
     if (argc != 2) {
         std::cerr << "Usage: " << argv[0] << " <input-file.n3>" << std::endl;
@@ -1497,7 +1872,16 @@ int main(int argc, char* argv[]) {
     // ------------------------------------
 
     try {
-        int result = compile(code);
+        DiagnosticSink diagnostics;
+        int result = compile(code, diagnostics);
+        for (const auto& diagnostic : diagnostics.diagnostics()) {
+            cerr << "Diagnostic";
+            if (!diagnostic.code.empty()) {
+                cerr << " [" << diagnostic.code << "]";
+            }
+            cerr << " at " << format_source_span(diagnostic.source_span)
+                 << ": " << diagnostic.message << "\n";
+        }
         cout << result << "\n";
         return result;
     } catch (const exception& error) {
@@ -1508,3 +1892,4 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 }
+#endif
