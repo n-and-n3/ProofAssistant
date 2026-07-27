@@ -10,6 +10,7 @@ from __future__ import annotations
 from functools import cache
 from itertools import combinations
 from pathlib import Path
+import re
 import sys
 
 
@@ -23,6 +24,7 @@ from main import (  # noqa: E402
     Sequent,
     _make_proof,
     emit_n3,
+    generate_n3,
     parse_sequent,
 )
 
@@ -39,6 +41,22 @@ TRIANGLES = tuple(
     )
     for first, second, third in combinations(range(1, 7), 3)
 )
+
+LOWER_BOUND_SEQUENT = """Q12,Q23,Q34,Q45,Q15,
+~Q13,~Q14,~Q24,~Q25,~Q35
+|-
+~(
+    (Q12*Q13*Q23) + (~Q12*~Q13*~Q23)
+    + (Q12*Q14*Q24) + (~Q12*~Q14*~Q24)
+    + (Q12*Q15*Q25) + (~Q12*~Q15*~Q25)
+    + (Q13*Q14*Q34) + (~Q13*~Q14*~Q34)
+    + (Q13*Q15*Q35) + (~Q13*~Q15*~Q35)
+    + (Q14*Q15*Q45) + (~Q14*~Q15*~Q45)
+    + (Q23*Q24*Q34) + (~Q23*~Q24*~Q34)
+    + (Q23*Q25*Q35) + (~Q23*~Q25*~Q35)
+    + (Q24*Q25*Q45) + (~Q24*~Q25*~Q45)
+    + (Q34*Q35*Q45) + (~Q34*~Q35*~Q45)
+)"""
 
 
 def variable(name: str) -> Prop:
@@ -110,7 +128,7 @@ def monochromatic_triangle(
     return None
 
 
-def generate() -> str:
+def generate_upper_bound() -> str:
     goal = parse_sequent(DEFAULT_SEQUENT)
     if len(goal.suc) != 1:
         raise RuntimeError("Ramsey goal must have exactly one succedent.")
@@ -211,6 +229,45 @@ def generate() -> str:
         "",
     ]
     return "\n".join(header) + emit_n3(goal, root)
+
+
+def renumber_proofs(program: str, offset: int) -> str:
+    return re.sub(
+        r"\bproof([0-9]+)\b",
+        lambda match: f"proof{int(match.group(1)) + offset}",
+        program,
+    )
+
+
+def generate() -> str:
+    upper_bound = generate_upper_bound()
+    proof_numbers = [
+        int(value) for value in re.findall(r"\bproof([0-9]+)\b", upper_bound)
+    ]
+    lower_bound = generate_n3(LOWER_BOUND_SEQUENT)
+    lower_bound = renumber_proofs(
+        lower_bound,
+        max(proof_numbers, default=-1) + 1,
+    )
+    lower_numbers = [
+        int(value) for value in re.findall(r"\bproof([0-9]+)\b", lower_bound)
+    ]
+    if not lower_numbers:
+        raise RuntimeError("The lower-bound generator produced no proof.")
+    lower_bound = re.sub(
+        rf"\bproof{max(lower_numbers)}\b",
+        "ramsey_lower_bound",
+        lower_bound,
+    )
+    lower_header = [
+        "",
+        "// Proof of R(3,3) > 5.",
+        "// The Q variables describe a two-coloring of K5.",
+        "// True edges form the cycle 1-2-3-4-5-1; false edges form",
+        "// its complementary 5-cycle. Neither color has a triangle.",
+        "",
+    ]
+    return upper_bound.rstrip() + "\n" + "\n".join(lower_header) + lower_bound
 
 
 def main() -> None:

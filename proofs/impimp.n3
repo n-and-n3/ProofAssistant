@@ -11,6 +11,6 @@ Type C;
 [B->C, A->B, A |- C] s1 = impL<B, C>(p1, p2);
 
 [~C, B->C, A->B, A |- ] s0 = notL<C>(s1);
-[A->B, B->C, ~C |- ~A] goal = notR<A>(s0);
+[A->B, B->C, ~C |- (~A)] goal = notR<A>(s0);
 
 print goal;

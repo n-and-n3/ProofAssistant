@@ -1,22 +1,28 @@
-CXX = g++
-CXXFLAGS = -Wall -std=c++17
+CXX ?= g++
+CXXFLAGS ?= -std=c++23 -O2 -Wall -Wextra
 
-TARGET = main
-SRC = main.cpp
+TARGET := main3
+SOURCE := main3.cpp
 
-$(TARGET): $(SRC)
-	$(CXX) $(CXXFLAGS) -o $(TARGET) $(SRC)
+.PHONY: all run test lsp extension-install clean
+
+all: $(TARGET)
+
+$(TARGET): $(SOURCE) main2.cpp proofassistant.cpp proofassistant.hpp
+	$(CXX) $(CXXFLAGS) $(SOURCE) -o $(TARGET)
 
 run: $(TARGET)
-	./$(TARGET)
+	./$(TARGET) proofs/iff.n3
 
-clean:
-	rm -f $(TARGET) $(TARGET).exe
-
-.PHONY: lsp extension-install
+test: $(TARGET)
+	python3 -m unittest tests.test_main tests.test_lsp
+	./$(TARGET) proofs/iff.n3
 
 lsp:
 	./scripts/build_lsp.sh
 
 extension-install:
 	./scripts/install_vscode_extension.sh
+
+clean:
+	rm -f $(TARGET)

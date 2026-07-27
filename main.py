@@ -11,26 +11,7 @@ from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
 
-DEFAULT_SEQUENT = """|- (P12*P13*P23) + (~P12*~P13*~P23)
-+ (P12*P14*P24) + (~P12*~P14*~P24)
-+ (P12*P15*P25) + (~P12*~P15*~P25)
-+ (P12*P16*P26) + (~P12*~P16*~P26)
-+ (P13*P14*P34) + (~P13*~P14*~P34)
-+ (P13*P15*P35) + (~P13*~P15*~P35)
-+ (P13*P16*P36) + (~P13*~P16*~P36)
-+ (P14*P15*P45) + (~P14*~P15*~P45)
-+ (P14*P16*P46) + (~P14*~P16*~P46)
-+ (P15*P16*P56) + (~P15*~P16*~P56)
-+ (P23*P24*P34) + (~P23*~P24*~P34)
-+ (P23*P25*P35) + (~P23*~P25*~P35)
-+ (P23*P26*P36) + (~P23*~P26*~P36)
-+ (P24*P25*P45) + (~P24*~P25*~P45)
-+ (P24*P26*P46) + (~P24*~P26*~P46)
-+ (P25*P26*P56) + (~P25*~P26*~P56)
-+ (P34*P35*P45) + (~P34*~P35*~P45)
-+ (P34*P36*P46) + (~P34*~P36*~P46)
-+ (P35*P36*P56) + (~P35*~P36*~P56)
-+ (P45*P46*P56) + (~P45*~P46*~P56)"""
+DEFAULT_SEQUENT = """|- A -> A"""
 RESERVED_IDENTIFIERS = frozenset({"Type", "auto", "print"})
 IDENTIFIER_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 
